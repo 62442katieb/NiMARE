@@ -19,7 +19,7 @@ def cli():
 cli.add_command(ale_sleuth_workflow)
 cli.add_command(con_perm_workflow)
 cli.add_command(macm_workflow)
-cli.add_command(metacluster)
+cli.add_command(meta_cluster_workflow)
 # cli.add_command(scale_workflow)
 cli.add_command(peaks2maps_workflow)
 cli.add_command(sleuth2nimare)
