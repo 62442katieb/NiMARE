@@ -20,16 +20,16 @@ You can then install ``nimare`` with:
 
 .. code-block:: bash
 
-  pip install nimare
+  python setup.py develop
 
 What Next?
-`````````
+``````````
 
 For an overview of what you can do with NiMARE see `NiMARE Documentation`_.
 
 To get right to using NiMARE see the documentation on the `command line interface`_.
 
-If you have questions, or need help with using NiMARE check out `Neuro Stars`_.
+If you have questions, or need help with using NiMARE, check out `NeuroStars`_.
 
 .. tip::
 

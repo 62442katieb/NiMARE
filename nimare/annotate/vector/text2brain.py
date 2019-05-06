@@ -5,7 +5,7 @@ from ...base import AnnotationModel
 from ...due import due, BibTeX
 
 
-@due.dcite(BibTeX("""
+@due.dcite(BibTeX(r"""
     @article{2018arXiv180601139D,
     author = {{Dock{\`e}s}, J. and {Wassermann}, D. and {Poldrack}, R. and
               {Suchanek}, F. and {Thirion}, B. and {Varoquaux}, G.},
@@ -26,6 +26,10 @@ from ...due import due, BibTeX
 class Text2BrainModel(AnnotationModel):
     """
     Generate a Text2Brain vector model.
+
+    Warnings
+    --------
+    This method is not yet implemented.
     """
     def __init__(self, text_df, coordinates_df):
         pass
