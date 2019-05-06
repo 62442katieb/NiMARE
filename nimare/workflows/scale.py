@@ -47,7 +47,7 @@ def scale_workflow(database, baseline, output_dir=None, output_prefix=None,
         db = convert_sleuth_to_database(database)
     dset = db.get_dataset()
     ijk = np.vstack(np.where(dset.mask.get_data())).T
-    #ijk = np.loadtxt(base_img)
+    #ijk = np.loadtxt(baseline)
     estimator = SCALE(dset, ijk=ijk, kernel_estimator=ALEKernel, n_iters=n_iters)
     estimator.fit(dset.ids, voxel_thresh=v_thr, n_iters=n_iters, n_cores=2)
     estimator.results.save_results(output_dir=output_dir, prefix=output_prefix, prefix_sep='_')
