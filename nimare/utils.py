@@ -10,12 +10,29 @@ import numpy as np
 import nibabel as nib
 from nilearn import datasets
 
-from .due import due, Doi
+from .due import due
+from . import references
 
 LGR = logging.getLogger(__name__)
 
 
 def get_template(space='mni152_1mm', mask=None):
+    """
+    Load template file.
+
+    Parameters
+    ----------
+    space : {'mni152_1mm', 'mni152_2mm', 'ale_2mm'}, optional
+        Template to load. Default is 'mni152_1mm'.
+    mask : {None, 'brain', 'gm'}, optional
+        Whether to return the raw template (None), a brain mask ('brain'), or
+        a gray-matter mask ('gm'). Default is None.
+
+    Returns
+    -------
+    img : :obj:`nibabel.nifti1.Nifti1Image`
+        Template image object.
+    """
     if space == 'mni152_1mm':
         if mask is None:
             img = nib.load(datasets.fetch_icbm152_2009()['t1'])
@@ -96,11 +113,11 @@ def mm2vox(xyz, affine):
     return ijk
 
 
-@due.dcite(Doi('10.1002/hbm.20345'),
+@due.dcite(references.LANCASTER_TRANSFORM,
            description='Introduces the Lancaster MNI-to-Talairach transform, '
                        'as well as its inverse, the Talairach-to-MNI '
                        'transform.')
-@due.dcite(Doi('10.1016/j.neuroimage.2010.02.048'),
+@due.dcite(references.LANCASTER_TRANSFORM_VALIDATION,
            description='Validates the Lancaster MNI-to-Talairach and '
                        'Talairach-to-MNI transforms.')
 def tal2mni(coords):
@@ -152,11 +169,11 @@ def tal2mni(coords):
     return out_coords
 
 
-@due.dcite(Doi('10.1002/hbm.20345'),
+@due.dcite(references.LANCASTER_TRANSFORM,
            description='Introduces the Lancaster MNI-to-Talairach transform, '
                        'as well as its inverse, the Talairach-to-MNI '
                        'transform.')
-@due.dcite(Doi('10.1016/j.neuroimage.2010.02.048'),
+@due.dcite(references.LANCASTER_TRANSFORM_VALIDATION,
            description='Validates the Lancaster MNI-to-Talairach and '
                        'Talairach-to-MNI transforms.')
 def mni2tal(coords):
@@ -211,3 +228,41 @@ def get_resource_path():
     Based on function by Yaroslav Halchenko used in Neurosynth Python package.
     """
     return op.abspath(op.join(op.dirname(__file__), 'resources') + op.sep)
+
+
+def try_prepend(value, prefix):
+    if isinstance(value, str):
+        return op.join(prefix, value)
+    else:
+        return value
+
+
+def find_stem(arr):
+    """
+    From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
+    """
+    # Determine size of the array
+    n = len(arr)
+
+    # Take first word from array
+    # as reference
+    s = arr[0]
+    ll = len(s)
+
+    res = ""
+    for i in range(ll):
+        for j in range(i + 1, ll + 1):
+            # generating all possible substrings of our ref string arr[0] i.e s
+            stem = s[i:j]
+            k = 1
+            for k in range(1, n):
+                # Check if the generated stem is common to to all words
+                if stem not in arr[k]:
+                    break
+
+            # If current substring is present in all strings and its length is
+            # greater than current result
+            if (k + 1 == n and len(res) < len(stem)):
+                res = stem
+
+    return res

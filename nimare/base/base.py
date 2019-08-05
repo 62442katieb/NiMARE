@@ -1,15 +1,18 @@
 """
 Base classes for datasets.
 """
+import os
+import gzip
+import copy
+import pickle
 import logging
 import multiprocessing as mp
 from collections import defaultdict
-from abc import ABCMeta, abstractmethod
+from abc import ABCMeta
 
+import inspect
+import nilearn as nl
 from six import with_metaclass
-from sklearn.utils.fixes import signature
-
-from ..dataset.dataset import Dataset
 
 LGR = logging.getLogger(__name__)
 
@@ -18,7 +21,7 @@ class NiMAREBase(with_metaclass(ABCMeta)):
     def __init__(self):
         """
         TODO: Actually write/refactor class methods. They mostly come directly from sklearn
-        https://github.com/scikit-learn/scikit-learn/blob/afe540c7f2cbad259dd333e6744b088213180bee/sklearn/base.py#L176
+        https://github.com/scikit-learn/scikit-learn/blob/2a1e9686eeb203f5fddf44fd06414db8ab6a554a/sklearn/base.py#L141
         """
         pass
 
@@ -48,7 +51,7 @@ class NiMAREBase(with_metaclass(ABCMeta)):
 
         # introspect the constructor arguments to find the model parameters
         # to represent
-        init_signature = signature(init)
+        init_signature = inspect.signature(init)
         # Consider the constructor parameters excluding 'self'
         parameters = [p for p in init_signature.parameters.values()
                       if p.name != 'self' and p.kind != p.VAR_KEYWORD]
@@ -123,39 +126,115 @@ class NiMAREBase(with_metaclass(ABCMeta)):
 
         return self
 
-
-class Transformer(NiMAREBase):
-    """Transformers take in Datasets and return Datasets
-
-    Initialize with hyperparameters.
-    """
-    def __init__(self):
-        pass
-
-    @abstractmethod
-    def transform(self, dataset):
-        """Add stuff to transformer.
+    def save(self, filename, compress=True):
         """
-        if not isinstance(dataset, Dataset):
-            raise ValueError('Argument "dataset" must be a valid Dataset '
-                             'object, not a {0}'.format(type(dataset)))
+        Pickle the class instance to the provided file.
 
-
-class Estimator(NiMAREBase):
-    """Estimators take in Datasets and return MetaResults
-    """
-    def __init__(self):
-        pass
-
-    @abstractmethod
-    def fit(self, dataset):
-        """Apply estimation to dataset and output results.
+        Parameters
+        ----------
+        filename : :obj:`str`
+            File to which object will be saved.
+        compress : :obj:`bool`, optional
+            If True, the file will be compressed with gzip. Otherwise, the
+            uncompressed version will be saved. Default = True.
         """
-        if not isinstance(dataset, Dataset):
-            raise ValueError('Argument "dataset" must be a valid Dataset '
-                             'object, not a {0}'.format(type(dataset)))
+        if compress:
+            with gzip.GzipFile(filename, 'wb') as file_object:
+                pickle.dump(self, file_object)
+        else:
+            with open(filename, 'wb') as file_object:
+                pickle.dump(self, file_object)
+
+    @classmethod
+    def load(cls, filename, compressed=True):
+        """
+        Load a pickled class instance from file.
+
+        Parameters
+        ----------
+        filename : :obj:`str`
+            Name of file containing object.
+        compressed : :obj:`bool`, optional
+            If True, the file is assumed to be compressed and gzip will be used
+            to load it. Otherwise, it will assume that the file is not
+            compressed. Default = True.
+
+        Returns
+        -------
+        obj : class object
+            Loaded class object.
+        """
+        if compressed:
+            try:
+                with gzip.GzipFile(filename, 'rb') as file_object:
+                    obj = pickle.load(file_object)
+            except UnicodeDecodeError:
+                # Need to try this for python3
+                with gzip.GzipFile(filename, 'rb') as file_object:
+                    obj = pickle.load(file_object, encoding='latin')
+        else:
+            try:
+                with open(filename, 'rb') as file_object:
+                    obj = pickle.load(file_object)
+            except UnicodeDecodeError:
+                # Need to try this for python3
+                with open(filename, 'rb') as file_object:
+                    obj = pickle.load(file_object, encoding='latin')
+
+        if not isinstance(obj, cls):
+            raise IOError('Pickled object must be {0}, '
+                          'not {1}'.format(cls, type(obj)))
+
+        return obj
 
 
-class Result(with_metaclass(ABCMeta)):
-    def __init__(self):
-        pass
+class MetaResult(object):
+    """
+    Base class for meta-analytic results.
+    """
+    def __init__(self, estimator, mask, maps=None):
+        self.estimator = estimator
+        self.mask = mask
+        self.maps = maps or {}
+
+    def get_map(self, name, return_type='image'):
+        m = self.maps.get(name)
+        if m is None:
+            raise ValueError("No map with name '{}' found.".format(name))
+        return nl.masking.unmask(m, self.mask) if return_type == 'image' else m
+
+    def save_maps(self, output_dir='.', prefix='', prefix_sep='_',
+                  names=None):
+        """
+        Save results to files.
+
+        Parameters
+        ----------
+        output_dir : :obj:`str`, optional
+            Output directory in which to save results. If the directory doesn't
+            exist, it will be created. Default is current directory.
+        prefix : :obj:`str`, optional
+            Prefix to prepent to output file names. Default is none.
+        prefix_sep : :obj:`str`, optional
+            Separator to add between prefix and default file names. Default is
+            _.
+        """
+        if prefix == '':
+            prefix_sep = ''
+
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        names = names or list(self.maps.keys())
+        maps = {k: self.get_map(k) for k in names}
+
+        for imgtype, img in maps.items():
+            filename = prefix + prefix_sep + imgtype + '.nii.gz'
+            outpath = os.path.join(output_dir, filename)
+            img.to_filename(outpath)
+
+    def copy(self):
+        new = MetaResult(copy.copy(self.estimator),
+                         copy.copy(self.mask),
+                         copy.deepcopy(self.maps))
+        return new

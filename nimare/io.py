@@ -11,19 +11,23 @@ import pandas as pd
 from .dataset import Dataset
 
 
-def convert_neurosynth_to_json(text_file, out_file, annotations_file=None):
+def convert_neurosynth_to_dict(text_file, annotations_file=None):
     """
-    Convert Neurosynth dataset text file to a NiMARE json file.
+    Convert Neurosynth database files to a dictionary.
 
     Parameters
     ----------
     text_file : :obj:`str`
         Text file with Neurosynth's coordinates. Normally named "database.txt".
-    out_file : :obj:`str`
-        Output NiMARE-format json file.
     annotations_file : :obj:`str` or None, optional
         Optional file with Neurosynth's annotations. Normally named
         "features.txt". Default is None.
+
+    Returns
+    -------
+    dict_ : :obj:`dict`
+        NiMARE-organized dictionary containing experiment information from text
+        files.
     """
     dset_df = pd.read_csv(text_file, sep='\t')
     if annotations_file is not None:
@@ -55,8 +59,51 @@ def convert_neurosynth_to_json(text_file, out_file, annotations_file=None):
             study_dict['contrasts']['1']['labels'] = label_df.loc[sid].to_dict()
         dict_[sid] = study_dict
 
+    return dict_
+
+
+def convert_neurosynth_to_json(text_file, out_file, annotations_file=None):
+    """
+    Convert Neurosynth dataset text file to a NiMARE json file.
+
+    Parameters
+    ----------
+    text_file : :obj:`str`
+        Text file with Neurosynth's coordinates. Normally named "database.txt".
+    out_file : :obj:`str`
+        Output NiMARE-format json file.
+    annotations_file : :obj:`str` or None, optional
+        Optional file with Neurosynth's annotations. Normally named
+        "features.txt". Default is None.
+    """
+    dict_ = convert_neurosynth_to_dict(text_file, annotations_file)
     with open(out_file, 'w') as fo:
         json.dump(dict_, fo, indent=4, sort_keys=True)
+
+
+def convert_neurosynth_to_dataset(text_file, annotations_file=None,
+                                  target='mni152_2mm'):
+    """
+    Convert Neurosynth database files into dictionary and create NiMARE Dataset
+    with dictionary.
+
+    Parameters
+    ----------
+    text_file : :obj:`str`
+        Text file with Neurosynth's coordinates. Normally named "database.txt".
+    target : {'mni152_2mm', 'ale_2mm'}, optional
+        Target template space for coordinates. Default is 'mni152_2mm'.
+    annotations_file : :obj:`str` or None, optional
+        Optional file with Neurosynth's annotations. Normally named
+        "features.txt". Default is None.
+
+    Returns
+    -------
+    :obj:`nimare.dataset.Dataset`
+        Dataset object containing experiment information from text_file.
+    """
+    dict_ = convert_neurosynth_to_dict(text_file, annotations_file)
+    return Dataset(dict_, target=target)
 
 
 def convert_sleuth_to_dict(text_file):
@@ -82,9 +129,12 @@ def convert_sleuth_to_dict(text_file):
     data = [line for line in data if line]
     # First line indicates space. The rest are studies, ns, and coords
     space = data[0].replace(' ', '').replace('//Reference=', '')
-    if space not in ['MNI', 'TAL']:
+
+    SPACE_OPTS = ['MNI', 'TAL', 'Talairach']
+    if space not in SPACE_OPTS:
         raise Exception('Space {0} unknown. Options supported: '
-                        'MNI or TAL.'.format(space))
+                        '{0}.'.format(space, ', '.format(SPACE_OPTS)))
+
     # Split into experiments
     data = data[1:]
     metadata_idx = [i for i, line in enumerate(data) if line.startswith('//')]
@@ -97,12 +147,16 @@ def convert_sleuth_to_dict(text_file):
     for i_exp, exp_idx in enumerate(split_idx):
         exp_data = data[exp_idx[0]:exp_idx[1]]
         if exp_data:
-            study_info = exp_data[0].replace('//', '').strip()
+            header_idx = [i for i in range(len(exp_data)) if exp_data[i].startswith('//')]
+            study_info_idx = header_idx[:-1]
+            n_idx = header_idx[-1]
+            study_info = [exp_data[i].replace('//', '').strip() for i in study_info_idx]
+            study_info = ' '.join(study_info)
             study_name = study_info.split(':')[0]
             contrast_name = ':'.join(study_info.split(':')[1:]).strip()
-            sample_size = int(exp_data[1].replace(
+            sample_size = int(exp_data[n_idx].replace(
                 ' ', '').replace('//Subjects=', ''))
-            xyz = exp_data[2:]  # Coords are everything after study info and n
+            xyz = exp_data[n_idx + 1:]  # Coords are everything after study info and n
             xyz = [row.split('\t') for row in xyz]
             correct_shape = np.all([len(coord) == 3 for coord in xyz])
             if not correct_shape:
@@ -164,7 +218,12 @@ def convert_sleuth_to_json(text_file, out_file):
     dict_ = {}
     for text_file in text_files:
         temp_dict = convert_sleuth_to_dict(text_file)
-        dict_ = {**dict_, **temp_dict}
+        for sid in temp_dict.keys():
+            if sid in dict_.keys():
+                dict_[sid]['contrasts'] = {**dict_[sid]['contrasts'],
+                                           **temp_dict[sid]['contrasts']}
+            else:
+                dict_[sid] = temp_dict[sid]
 
     with open(out_file, 'w') as fo:
         json.dump(dict_, fo, indent=4, sort_keys=True)
