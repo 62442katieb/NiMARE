@@ -9,6 +9,7 @@ from sklearn.metrics import silhouette_score
 from ..due import due, Doi
 from ..meta.cbma.kernel import ALEKernel, MKDAKernel, KDAKernel, Peaks2MapsKernel
 from ..io import convert_sleuth_to_dataset
+from ..dataset import Dataset
 
 
 @click.command(name='metacluster',
@@ -18,7 +19,7 @@ from ..io import convert_sleuth_to_dataset
                help='Method for investigating recurrent patterns of activation accross a '
                     'meta-analytic dataset, thus identifying trends across a collection of '
                     'experiments.')
-@click.argument('database', required=True, type=click.Path(exists=True, readable=True))
+@click.argument('dataset', required=True, type=click.Path(exists=True, readable=True))
 @click.option('--output_dir', required=True, type=click.Path(exists=True), help='Directory into which clustering results will be written.')
 @click.option('--output_prefix', default='metacluster', type=str, help='Common prefix for output clustering results.')
 @click.option('--kernel', default='ALEKernel', type=click.Choice(['ALEKernel', 'MKDAKernel', 'KDAKernel', 'Peaks2MapsKernel']), help='Kernel estimator, for coordinate-based metaclustering.')
@@ -29,11 +30,11 @@ from ..io import convert_sleuth_to_dataset
            description='Introduces meta-analytic clustering analysis; hierarchically clusering face paradigms.')
 @due.dcite(Doi('10.1162/netn_a_00050'),
            description='Performs the specific meta-analytic clustering approach included here.')
-def meta_cluster_workflow(database, output_dir=None, output_prefix=None,
+def meta_cluster_workflow(dataset, output_dir=None, output_prefix=None,
                           kernel='ALEKernel', coord=True, algorithm='kmeans',
                           clust_range=(2, 10)):
     """
-    Perform a meta-analytic clustering analysis on a database file.
+    Perform a meta-analytic clustering analysis on a dataset file.
 
     Warnings
     --------
@@ -53,26 +54,28 @@ def meta_cluster_workflow(database, output_dir=None, output_prefix=None,
                     sigma += r * (log(r / p, 2) + log(r / q, 2))
         return abs(sigma)
     # template_file = get_template(space='mni152_1mm', mask=None)
-    if database.endswith('.json'):
-        db = database  # how do I read in a generic database file? do I need options for source type?
-        ids = db.ids
-        dset = db.get_dataset(ids, target='mni152_2mm')
-    elif database.endswith('.txt'):
-        db = convert_sleuth_to_dataset(database)
-        dset = db.get_dataset(target='mni152_2mm')
+    if dataset.endswith('.json'):
+        dset = Dataset(dataset)  # how do I read in a generic dataset file? do I need options for source type?
+        #ds = db.ids
+        #dset = db._load_coordinates()
+    elif dataset.endswith('.txt'):
+        dset = convert_sleuth_to_dataset(dataset)
+        #dset = db._load_coordinates()
+        #dset = convert_sleuth_to_dataset(sleuth_file, target='ale_2mm')
+        #n_subs = dset.coordinates.drop_duplicates('id')['n'].astype(float).astype(int).sum()
     else:
-        raise click.BadParameter('You\'ve provided a database that metacluster can\'t read. :(', param_hint='database')
+        raise click.BadParameter('You\'ve provided a dataset that metacluster can\'t read. :(', param_hint='dataset')
     # imgs = dset.images
     if coord:
         if kernel == 'ALEKernel':
-            kern = ALEKernel(dset.coordinates, 'template_img')
+            kern = ALEKernel(dset.coordinates, dset.mask)
         elif kernel == 'MKDAKernel':
-            kern = MKDAKernel(dset.coordinates, 'template_img')
+            kern = MKDAKernel(dset.coordinates, dset.mask)
         elif kernel == 'KDAKernel':
-            kern = KDAKernel(dset.coordinates, 'template_img')
+            kern = KDAKernel(dset.coordinates, dset.mask)
         elif kernel == 'Peaks2MapsKernel':
-            kern = Peaks2MapsKernel(dset.coordinates, 'template_img')
-        imgs = kern.transform(dset.ids)
+            kern = Peaks2MapsKernel(dset.coordinates, dset.mask)
+        imgs = kern.transform(dset)
     imgs_arr = []
     for i in np.arange(0, len(imgs)):
         imgs_arr.append(np.ravel(imgs[i].get_data(), order='C'))
