@@ -72,15 +72,10 @@ class ALEKernel(KernelTransformer):
             mask_data = mask.get_data().astype(np.bool)
 
         imgs = []
-<<<<<<< HEAD
         kernels = {}
         temp_coordinates = self.coordinates.loc[self.coordinates['id'].isin(ids)]
         for id_, data in temp_coordinates.groupby('id'):
             # ijk = data[['i', 'j', 'k']].values.astype(int)
-=======
-        kernels = {}  # retain kernels in dictionary to speed things up
-        for id_, data in coordinates.groupby('id'):
->>>>>>> refs/remotes/origin/master
             ijk = np.vstack((data.i.values, data.j.values, data.k.values)).T.astype(int)
             if self.n is not None:
                 n_subjects = self.n
@@ -168,12 +163,8 @@ class MKDAKernel(KernelTransformer):
         vox_dims = mask.header.get_zooms()
 
         imgs = []
-<<<<<<< HEAD
         temp_coordinates = self.coordinates.loc[self.coordinates['id'].isin(ids)]
         for id_, data in temp_coordinates.groupby('id'):
-=======
-        for id_, data in coordinates.groupby('id'):
->>>>>>> refs/remotes/origin/master
             kernel_data = np.zeros(dims)
             for ijk in np.vstack((data.i.values, data.j.values, data.k.values)).T:
                 xx, yy, zz = [slice(-self.r // vox_dims[i], self.r // vox_dims[i] + 0.01, 1) for i in range(len(ijk))]
@@ -249,12 +240,8 @@ class KDAKernel(KernelTransformer):
         vox_dims = mask.header.get_zooms()
 
         imgs = []
-<<<<<<< HEAD
         temp_coordinates = self.coordinates.loc[self.coordinates['id'].isin(ids)]
         for id_, data in temp_coordinates.groupby('id'):
-=======
-        for id_, data in coordinates.groupby('id'):
->>>>>>> refs/remotes/origin/master
             kernel_data = np.zeros(dims)
             for ijk in np.vstack((data.i.values, data.j.values, data.k.values)).T:
                 xx, yy, zz = [slice(-self.r // vox_dims[i], self.r // vox_dims[i] + 0.01, 1) for i in range(len(ijk))]
