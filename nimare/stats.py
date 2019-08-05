@@ -5,7 +5,8 @@ import numpy as np
 from scipy import stats
 from scipy.special import ndtri
 
-from .due import due, BibTeX, Doi
+from .due import due
+from . import references
 
 
 def one_way(data, n):
@@ -15,6 +16,10 @@ def one_way(data, n):
     Note that if you're testing activation with this, make sure that only
     valid voxels (e.g., in-mask gray matter voxels) are included in the
     array, or results won't make any sense!
+
+    Returns
+    -------
+    Chi2 values
     """
     term = data.astype('float64')
     no_term = n - term
@@ -31,7 +36,7 @@ def two_way(cells):
     """ Two-way chi-square test of independence.
     Takes a 3D array as input: N(voxels) x 2 x 2, where the last two
     dimensions are the contingency table for each of N voxels. Returns an
-    array of p-values.
+    array of chi2 values.
     """
     # Mute divide-by-zero warning for bad voxels since we account for that
     # later
@@ -106,21 +111,9 @@ def p_to_z(p, tail='two'):
     return z
 
 
-@due.dcite(BibTeX("""
-           @article{hughett2007accurate,
-             title={Accurate Computation of the F-to-z and t-to-z Transforms
-                    for Large Arguments},
-             author={Hughett, Paul and others},
-             journal={Journal of Statistical Software},
-             volume={23},
-             number={1},
-             pages={1--5},
-             year={2007},
-             publisher={Foundation for Open Access Statistics}
-           }
-           """),
+@due.dcite(references.T2Z_TRANSFORM,
            description='Introduces T-to-Z transform.')
-@due.dcite(Doi('10.5281/zenodo.32508'),
+@due.dcite(references.T2Z_IMPLEMENTATION,
            description='Python implementation of T-to-Z transform.')
 def t_to_z(t_values, dof):
     """

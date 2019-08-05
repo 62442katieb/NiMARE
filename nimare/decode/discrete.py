@@ -6,25 +6,27 @@ import numpy as np
 import pandas as pd
 import nibabel as nib
 from scipy.stats import binom
+from scipy import special
 from statsmodels.sandbox.stats.multicomp import multipletests
 
 from .utils import weight_priors
 from ..stats import p_to_z, one_way, two_way
-from ..due import due, Doi
+from ..due import due
+from .. import references
 
 
-@due.dcite(Doi('10.1371/journal.pcbi.1005649'),
-           description='Citation for GCLDA decoding.')
+@due.dcite(references.GCLDA_DECODING, description='Citation for GCLDA decoding.')
 def gclda_decode_roi(model, roi, topic_priors=None, prior_weight=1.):
     r"""
     Perform image-to-text decoding for discrete image inputs (e.g., regions
-    of interest, significant clusters).
+    of interest, significant clusters) according to the method described in
+    [1]_.
 
     Parameters
     ----------
-    model : :obj:`gclda.model.Model`
+    model : :obj:`nimare.annotate.topic.GCLDAModel`
         Model object needed for decoding.
-    roi : :obj:`nibabel.nifti.Nifti1Image` or :obj:`str`
+    roi : :obj:`nibabel.nifti1.Nifti1Image` or :obj:`str`
         Binary image to decode into text. If string, path to a file with
         the binary image.
     topic_priors : :obj:`numpy.ndarray` of :obj:`float`, optional
@@ -66,6 +68,13 @@ def gclda_decode_roi(model, roi, topic_priors=None, prior_weight=1.):
             - :math:`p(w|r) \propto \\tau_{t} \cdot p(w|t)`
     4.  The resulting vector (``word_weights``) reflects arbitrarily scaled
         term weights for the ROI.
+
+    References
+    ----------
+    .. [1] Rubin, Timothy N., et al. "Decoding brain activity using a
+        large-scale probabilistic functional-anatomical atlas of human
+        cognition." PLoS computational biology 13.10 (2017): e1005649.
+        https://doi.org/10.1371/journal.pcbi.1005649
     """
     if isinstance(roi, str):
         roi = nib.load(roi)
@@ -96,21 +105,28 @@ def gclda_decode_roi(model, roi, topic_priors=None, prior_weight=1.):
     # p_word_g_topic = np.nan_to_num(p_word_g_topic, 0)
     word_weights = np.dot(model.p_word_g_topic, topic_weights)
 
-    decoded_df = pd.DataFrame(index=model.word_labels,
+    decoded_df = pd.DataFrame(index=model.vocabulary,
                               columns=['Weight'], data=word_weights)
     decoded_df.index.name = 'Term'
     return decoded_df, topic_weights
 
 
-@due.dcite(Doi('10.1007/s00429-013-0698-0'),
+@due.dcite(references.BRAINMAP_DECODING,
            description='Citation for BrainMap-style decoding.')
 def brainmap_decode(coordinates, annotations, ids, ids2=None, features=None,
                     frequency_threshold=0.001, u=0.05, correction='fdr_bh'):
     """
     Perform image-to-text decoding for discrete image inputs (e.g., regions
-    of interest, significant clusters) according to the BrainMap method.
+    of interest, significant clusters) according to the BrainMap method [1]_.
+
+    References
+    ----------
+    .. [1] Amft, Maren, et al. "Definition and characterization of an extended
+        social-affective default network." Brain Structure and Function 220.2
+        (2015): 1031-1049. https://doi.org/10.1007/s00429-013-0698-0
     """
-    dataset_ids = sorted(list(set(coordinates['ids'].values)))
+    id_cols = ['id', 'study_id', 'contrast_id']
+    dataset_ids = sorted(list(set(coordinates['id'].values)))
     if ids2 is None:
         unselected = sorted(list(set(dataset_ids) - set(ids)))
     else:
@@ -118,9 +134,11 @@ def brainmap_decode(coordinates, annotations, ids, ids2=None, features=None,
 
     if features is None:
         features = annotations.columns.values
+        features = [f for f in features if f not in id_cols]
 
     # Binarize with frequency threshold
-    features_df = annotations[features].ge(frequency_threshold)
+    features_df = annotations.set_index('id', drop=True)
+    features_df = features_df[features].ge(frequency_threshold)
 
     sel_array = features_df.loc[ids].values
     unsel_array = features_df.loc[unselected].values
@@ -168,7 +186,8 @@ def brainmap_decode(coordinates, annotations, ids, ids2=None, features=None,
     # Two-way chi-square test for specificity of activation
     cells = np.array([[n_selected_term, n_selected_noterm],  # pylint: disable=no-member
                       [n_unselected_term, n_unselected_noterm]]).T
-    p_ri = two_way(cells)
+    chi2_ri = two_way(cells)
+    p_ri = special.chdtrc(1, chi2_ri)
     sign_ri = np.sign(p_selected_g_term - p_selected_g_noterm).ravel()  # pylint: disable=no-member
 
     # Ignore rare features
@@ -186,8 +205,8 @@ def brainmap_decode(coordinates, annotations, ids, ids2=None, features=None,
         p_corr_ri = p_ri
 
     # Compute z-values
-    z_corr_fi = p_to_z(p_corr_fi, sign_fi)
-    z_corr_ri = p_to_z(p_corr_ri, sign_ri)
+    z_corr_fi = p_to_z(p_corr_fi, 'two') * sign_fi
+    z_corr_ri = p_to_z(p_corr_ri, 'two') * sign_ri
 
     # Effect size
     arr = np.array([p_corr_fi, z_corr_fi, l_selected_g_term,  # pylint: disable=no-member
@@ -200,20 +219,27 @@ def brainmap_decode(coordinates, annotations, ids, ids2=None, features=None,
     return out_df
 
 
-@due.dcite(Doi('10.1038/nmeth.1635'), description='Introduces Neurosynth.')
+@due.dcite(references.NEUROSYNTH, description='Introduces Neurosynth.')
 def neurosynth_decode(coordinates, annotations, ids, ids2=None, features=None,
                       frequency_threshold=0.001, prior=0.5, u=0.05,
                       correction='fdr_bh'):
     """
     Perform discrete functional decoding according to Neurosynth's
-    meta-analytic method. This does not employ correlations between
+    meta-analytic method [1]_. This does not employ correlations between
     unthresholded maps, which are the method of choice for decoding within
     Neurosynth and Neurovault.
     Metadata (i.e., feature labels) for studies within the selected sample
     (`ids`) are compared to the unselected studies remaining in the database
     (`dataset`).
+
+    References
+    ----------
+    .. [1] Yarkoni, Tal, et al. "Large-scale automated synthesis of human
+        functional neuroimaging data." Nature methods 8.8 (2011): 665.
+        https://doi.org/10.1038/nmeth.1635
     """
-    dataset_ids = sorted(list(set(coordinates['ids'].values)))
+    id_cols = ['id', 'study_id', 'contrast_id']
+    dataset_ids = sorted(list(set(coordinates['id'].values)))
     if ids2 is None:
         unselected = sorted(list(set(dataset_ids) - set(ids)))
     else:
@@ -221,9 +247,11 @@ def neurosynth_decode(coordinates, annotations, ids, ids2=None, features=None,
 
     if features is None:
         features = annotations.columns.values
+        features = [f for f in features if f not in id_cols]
 
     # Binarize with frequency threshold
-    features_df = annotations[features].ge(frequency_threshold)
+    features_df = annotations.set_index('id', drop=True)
+    features_df = features_df[features].ge(frequency_threshold)
 
     sel_array = features_df.loc[ids].values
     unsel_array = features_df.loc[unselected].values
@@ -252,13 +280,15 @@ def neurosynth_decode(coordinates, annotations, ids, ids2=None, features=None,
 
     # Significance testing
     # One-way chi-square test for consistency of term frequency across terms
-    p_fi = one_way(n_selected_term, n_term)
+    chi2_fi = one_way(n_selected_term, n_term)
+    p_fi = special.chdtrc(1, chi2_fi)
     sign_fi = np.sign(n_selected_term - np.mean(n_selected_term)).ravel()  # pylint: disable=no-member
 
     # Two-way chi-square test for specificity of activation
     cells = np.array([[n_selected_term, n_selected_noterm],  # pylint: disable=no-member
                       [n_unselected_term, n_unselected_noterm]]).T
-    p_ri = two_way(cells)
+    chi2_ri = two_way(cells)
+    p_ri = special.chdtrc(1, chi2_ri)
     sign_ri = np.sign(p_selected_g_term - p_selected_g_noterm).ravel()  # pylint: disable=no-member
 
     # Multiple comparisons correction across terms. Separately done for FI and RI.
@@ -272,8 +302,8 @@ def neurosynth_decode(coordinates, annotations, ids, ids2=None, features=None,
         p_corr_ri = p_ri
 
     # Compute z-values
-    z_corr_fi = p_to_z(p_corr_fi, sign_fi)
-    z_corr_ri = p_to_z(p_corr_ri, sign_ri)
+    z_corr_fi = p_to_z(p_corr_fi, 'two') * sign_fi
+    z_corr_ri = p_to_z(p_corr_ri, 'two') * sign_ri
 
     # Effect size
     # est. prob. of brain state described by term finding activation in ROI

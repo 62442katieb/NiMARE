@@ -14,11 +14,6 @@ API
 
    nimare.dataset.Dataset
 
-   :toctree: generated/
-   :template: module.rst
-
-   nimare.dataset.extract
-
  .. currentmodule:: nimare
 
  .. _calibration_ref:
@@ -35,7 +30,8 @@ API
    :toctree: generated/
    :template: module.rst
 
-   nimare.meta.ibma.ibma
+   nimare.meta.esma
+   nimare.meta.ibma
    nimare.meta.cbma.kernel
    nimare.meta.cbma.ale
    nimare.meta.cbma.mkda
@@ -188,10 +184,8 @@ API
    :template: module.rst
 
    nimare.base.base
-   nimare.base.data
    nimare.base.annotate
    nimare.base.decode
-   nimare.base.inputs
    nimare.base.meta
    nimare.base.misc
 
