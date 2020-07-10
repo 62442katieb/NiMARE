@@ -1,22 +1,200 @@
 """
 Utilities
 """
-from __future__ import division
-
-import os.path as op
+import re
 import logging
+import os.path as op
 
 import numpy as np
+import pandas as pd
 import nibabel as nib
 from nilearn import datasets
+from nilearn.input_data import NiftiMasker
 
-from .due import due
-from . import references
+from .transforms import tal2mni, mni2tal, mm2vox
 
 LGR = logging.getLogger(__name__)
 
 
-def get_template(space='mni152_1mm', mask=None):
+def dict_to_df(id_df, data, key='labels'):
+    """
+    Load a given data type in NIMADS-format dictionary into DataFrame.
+
+    Parameters
+    ----------
+    id_df : :obj:`pandas.DataFrame`
+        DataFrame with columns for identifiers. Index is [studyid]-[expid].
+    data : :obj:`dict`
+        NIMADS-format dictionary storing the raw dataset, from which
+        relevant data are loaded into DataFrames.
+    key : {'labels', 'metadata', 'text', 'images'}
+        Which data type to load.
+
+    Returns
+    -------
+    df : :obj:`pandas.DataFrame`
+        DataFrame with id columns from id_df and new columns for the
+        requested data type.
+    """
+    exp_dict = {}
+    for pid in data.keys():
+        for expid in data[pid]['contrasts'].keys():
+            exp = data[pid]['contrasts'][expid]
+            id_ = '{0}-{1}'.format(pid, expid)
+
+            if key not in data[pid]['contrasts'][expid].keys():
+                continue
+            exp_dict[id_] = exp[key]
+
+    temp_df = pd.DataFrame.from_dict(exp_dict, orient='index')
+    df = pd.merge(id_df, temp_df, left_index=True, right_index=True, how='outer')
+    df = df.reset_index(drop=True)
+    df = df.replace(to_replace='None', value=np.nan)
+    return df
+
+
+def dict_to_coordinates(data, masker, space):
+    """
+    Load coordinates in NIMADS-format dictionary into DataFrame.
+    """
+    # Required columns
+    columns = ['id', 'study_id', 'contrast_id', 'x', 'y', 'z', 'space']
+    core_columns = columns[:]  # Used in contrast for loop
+
+    all_dfs = []
+    for pid in data.keys():
+        for expid in data[pid]['contrasts'].keys():
+            if 'coords' not in data[pid]['contrasts'][expid].keys():
+                continue
+
+            exp_columns = core_columns[:]
+            exp = data[pid]['contrasts'][expid]
+
+            # Required info (ids, x, y, z, space)
+            n_coords = len(exp['coords']['x'])
+            rep_id = np.array([['{0}-{1}'.format(pid, expid), pid, expid]] * n_coords).T
+
+            space_arr = exp['coords'].get('space')
+            space_arr = np.array([space_arr] * n_coords)
+            temp_data = np.vstack((rep_id,
+                                   np.array(exp['coords']['x']),
+                                   np.array(exp['coords']['y']),
+                                   np.array(exp['coords']['z']),
+                                   space_arr))
+
+            # Optional information
+            for k in list(set(exp['coords'].keys()) - set(columns)):
+                k_data = exp['coords'][k]
+                if not isinstance(k_data, list):
+                    k_data = np.array([k_data] * n_coords)
+                exp_columns.append(k)
+
+                if k not in columns:
+                    columns.append(k)
+                temp_data = np.vstack((temp_data, k_data))
+
+            # Place data in list of dataframes to merge
+            con_df = pd.DataFrame(temp_data.T, columns=exp_columns)
+            all_dfs.append(con_df)
+
+    df = pd.concat(all_dfs, axis=0, join='outer', sort=False)
+    df = df[columns].reset_index(drop=True)
+    df = df.replace(to_replace='None', value=np.nan)
+    df[['x', 'y', 'z']] = df[['x', 'y', 'z']].astype(float)
+
+    # Now to apply transformations!
+    if 'mni' in space.lower() or 'ale' in space.lower():
+        transform = {'MNI': None,
+                     'TAL': tal2mni,
+                     'Talairach': tal2mni,
+                     }
+    elif 'tal' in space.lower():
+        transform = {'MNI': mni2tal,
+                     'TAL': None,
+                     'Talairach': None,
+                     }
+    else:
+        raise ValueError('Unrecognized space: {0}'.format(space))
+
+    found_spaces = df['space'].unique()
+    for found_space in found_spaces:
+        if found_space not in transform.keys():
+            LGR.warning('Not applying transforms to coordinates in '
+                        'unrecognized space "{0}"'.format(found_space))
+        alg = transform.get(found_space, None)
+        idx = df['space'] == found_space
+        if alg:
+            df.loc[idx, ['x', 'y', 'z']] = alg(df.loc[idx, ['x', 'y', 'z']].values)
+        df.loc[idx, 'space'] = space
+
+    xyz = df[['x', 'y', 'z']].values
+    ijk = pd.DataFrame(mm2vox(xyz, masker.mask_img.affine),
+                       columns=['i', 'j', 'k'])
+    df = pd.concat([df, ijk], axis=1)
+    return df
+
+
+def validate_df(df):
+    """Check that an input is a DataFrame and has a column for 'id'.
+    """
+    assert isinstance(df, pd.DataFrame)
+    assert 'id' in df.columns
+
+
+def validate_images_df(image_df):
+    """
+    Check and update image paths in DataFrame.
+
+    Parameters
+    ----------
+    image_df : :class:`pandas.DataFrame`
+        DataFrame with one row for each study and one column for each image
+        type. Cells contain paths to image files.
+
+    Returns
+    -------
+    image_df : :class:`pandas.DataFrame`
+        DataFrame with updated paths and columns.
+    """
+    valid_suffixes = ['.brik', '.head', '.nii', '.img', '.hed']
+    file_cols = []
+    for col in image_df.columns:
+        vals = [v for v in image_df[col].values if isinstance(v, str)]
+        fc = any([any([vs in v for vs in valid_suffixes]) for v in vals])
+        if fc:
+            file_cols.append(col)
+
+    # Clean up image_df
+    # Find out which columns have full paths and which have relative paths
+    abs_cols = []
+    for col in file_cols:
+        files = image_df[col].tolist()
+        abspaths = [f == op.abspath(f) for f in files if isinstance(f, str)]
+        if all(abspaths):
+            abs_cols.append(col)
+        elif not any(abspaths):
+            if not col.endswith('__relative'):
+                image_df = image_df.rename(columns={col: col + '__relative'})
+        else:
+            raise ValueError('Mix of absolute and relative paths detected '
+                             'for images in column "{}"'.format(col))
+
+    # Set relative paths from absolute ones
+    if len(abs_cols):
+        all_files = list(np.ravel(image_df[abs_cols].values))
+        all_files = [f for f in all_files if isinstance(f, str)]
+        shared_path = find_stem(all_files)
+        # Get parent *directory* if shared path includes common prefix.
+        if not shared_path.endswith(op.sep):
+            shared_path = op.dirname(shared_path) + op.sep
+        LGR.info('Shared path detected: "{0}"'.format(shared_path))
+        for abs_col in abs_cols:
+            image_df[abs_col + '__relative'] = image_df[abs_col].apply(
+                lambda x: x.split(shared_path)[1] if isinstance(x, str) else x)
+    return image_df
+
+
+def get_template(space='mni152_2mm', mask=None):
     """
     Load template file.
 
@@ -51,7 +229,7 @@ def get_template(space='mni152_1mm', mask=None):
             # this approach seems to approximate the 0.2 thresholded
             # GM mask pretty well
             temp_img = datasets.load_mni152_template()
-            data = temp_img.get_data()
+            data = temp_img.get_fdata()
             data = data * -1
             data[data != 0] += np.abs(np.min(data))
             data = (data > 1200).astype(int)
@@ -71,10 +249,42 @@ def get_template(space='mni152_1mm', mask=None):
     return img
 
 
+def get_masker(mask):
+    """
+    Get an initialized, fitted nilearn Masker instance from passed argument.
+
+    Parameters
+    ----------
+    mask : str, :class:`nibabel.nifti1.Nifti1Image`, or any nilearn Masker
+
+    Returns
+    -------
+    masker : an initialized, fitted instance of a subclass of
+        `nilearn.input_data.base_masker.BaseMasker`
+    """
+    if isinstance(mask, str):
+        mask = nib.load(mask)
+
+    if isinstance(mask, nib.nifti1.Nifti1Image):
+        mask = NiftiMasker(mask)
+
+    if not (hasattr(mask, 'transform') and hasattr(mask, 'inverse_transform')):
+        raise ValueError("mask argument must be a string, a nibabel image,"
+                         " or a Nilearn Masker instance.")
+
+    # Fit the masker if needed
+    if not hasattr(mask, 'mask_img_'):
+        mask.fit()
+
+    return mask
+
+
 def listify(obj):
-    ''' Wraps all non-list or tuple objects in a list; provides a simple way
-    to accept flexible arguments. '''
-    return obj if isinstance(obj, (list, tuple, type(None))) else [obj]
+    """
+    Wraps all non-list or tuple objects in a list; provides a simple way
+    to accept flexible arguments.
+    """
+    return obj if isinstance(obj, (list, tuple, type(None), np.ndarray)) else [obj]
 
 
 def round2(ndarray):
@@ -93,134 +303,6 @@ def round2(ndarray):
     return rounded.astype(int)
 
 
-def vox2mm(ijk, affine):
-    """
-    Convert matrix subscripts to coordinates.
-    From here:
-    http://blog.chrisgorgolewski.org/2014/12/how-to-convert-between-voxel-and-mm.html
-    """
-    xyz = nib.affines.apply_affine(affine, ijk)
-    return xyz
-
-
-def mm2vox(xyz, affine):
-    """
-    Convert coordinates to matrix subscripts.
-    From here:
-    http://blog.chrisgorgolewski.org/2014/12/how-to-convert-between-voxel-and-mm.html
-    """
-    ijk = nib.affines.apply_affine(np.linalg.inv(affine), xyz).astype(int)
-    return ijk
-
-
-@due.dcite(references.LANCASTER_TRANSFORM,
-           description='Introduces the Lancaster MNI-to-Talairach transform, '
-                       'as well as its inverse, the Talairach-to-MNI '
-                       'transform.')
-@due.dcite(references.LANCASTER_TRANSFORM_VALIDATION,
-           description='Validates the Lancaster MNI-to-Talairach and '
-                       'Talairach-to-MNI transforms.')
-def tal2mni(coords):
-    """
-    Python version of BrainMap's tal2icbm_other.m.
-    This function converts coordinates from Talairach space to MNI
-    space (normalized using templates other than those contained
-    in SPM and FSL) using the tal2icbm transform developed and
-    validated by Jack Lancaster at the Research Imaging Center in
-    San Antonio, Texas.
-    http://www3.interscience.wiley.com/cgi-bin/abstract/114104479/ABSTRACT
-    FORMAT outpoints = tal2icbm_other(inpoints)
-    Where inpoints is N by 3 or 3 by N matrix of coordinates
-    (N being the number of points)
-    ric.uthscsa.edu 3/14/07
-    """
-    # Find which dimensions are of size 3
-    shape = np.array(coords.shape)
-    if all(shape == 3):
-        LGR.info('Input is an ambiguous 3x3 matrix.\nAssuming coords are row '
-                 'vectors (Nx3).')
-        use_dim = 1
-    elif not any(shape == 3):
-        raise AttributeError('Input must be an Nx3 or 3xN matrix.')
-    else:
-        use_dim = np.where(shape == 3)[0][0]
-
-    # Transpose if necessary
-    if use_dim == 1:
-        coords = coords.transpose()
-
-    # Transformation matrices, different for each software package
-    icbm_other = np.array([[0.9357, 0.0029, -0.0072, -1.0423],
-                           [-0.0065, 0.9396, -0.0726, -1.3940],
-                           [0.0103, 0.0752, 0.8967, 3.6475],
-                           [0.0000, 0.0000, 0.0000, 1.0000]])
-
-    # Invert the transformation matrix
-    icbm_other = np.linalg.inv(icbm_other)
-
-    # Apply the transformation matrix
-    coords = np.concatenate((coords, np.ones((1, coords.shape[1]))))
-    coords = np.dot(icbm_other, coords)
-
-    # Format the output, transpose if necessary
-    out_coords = coords[:3, :]
-    if use_dim == 1:
-        out_coords = out_coords.transpose()
-    return out_coords
-
-
-@due.dcite(references.LANCASTER_TRANSFORM,
-           description='Introduces the Lancaster MNI-to-Talairach transform, '
-                       'as well as its inverse, the Talairach-to-MNI '
-                       'transform.')
-@due.dcite(references.LANCASTER_TRANSFORM_VALIDATION,
-           description='Validates the Lancaster MNI-to-Talairach and '
-                       'Talairach-to-MNI transforms.')
-def mni2tal(coords):
-    """
-    Python version of BrainMap's icbm_other2tal.m.
-    This function converts coordinates from MNI space (normalized using
-    templates other than those contained in SPM and FSL) to Talairach space
-    using the icbm2tal transform developed and validated by Jack Lancaster at
-    the Research Imaging Center in San Antonio, Texas.
-    http://www3.interscience.wiley.com/cgi-bin/abstract/114104479/ABSTRACT
-    FORMAT outpoints = icbm_other2tal(inpoints)
-    Where inpoints is N by 3 or 3 by N matrix of coordinates
-    (N being the number of points)
-    ric.uthscsa.edu 3/14/07
-    """
-    # Find which dimensions are of size 3
-    shape = np.array(coords.shape)
-    if all(shape == 3):
-        LGR.info('Input is an ambiguous 3x3 matrix.\nAssuming coords are row '
-                 'vectors (Nx3).')
-        use_dim = 1
-    elif not any(shape == 3):
-        raise AttributeError('Input must be an Nx3 or 3xN matrix.')
-    else:
-        use_dim = np.where(shape == 3)[0][0]
-
-    # Transpose if necessary
-    if use_dim == 1:
-        coords = coords.transpose()
-
-    # Transformation matrices, different for each software package
-    icbm_other = np.array([[0.9357, 0.0029, -0.0072, -1.0423],
-                           [-0.0065, 0.9396, -0.0726, -1.3940],
-                           [0.0103, 0.0752, 0.8967, 3.6475],
-                           [0.0000, 0.0000, 0.0000, 1.0000]])
-
-    # Apply the transformation matrix
-    coords = np.concatenate((coords, np.ones((1, coords.shape[1]))))
-    coords = np.dot(icbm_other, coords)
-
-    # Format the output, transpose if necessary
-    out_coords = coords[:3, :]
-    if use_dim == 1:
-        out_coords = out_coords.transpose()
-    return out_coords
-
-
 def get_resource_path():
     """
     Returns the path to general resources, terminated with separator. Resources
@@ -231,6 +313,10 @@ def get_resource_path():
 
 
 def try_prepend(value, prefix):
+    """
+    Try to prepend a value to a string with a separator ('/'). If not a string,
+    will just return the original value.
+    """
     if isinstance(value, str):
         return op.join(prefix, value)
     else:
@@ -239,6 +325,8 @@ def try_prepend(value, prefix):
 
 def find_stem(arr):
     """
+    Find longest common substring in array of strings.
+
     From https://www.geeksforgeeks.org/longest-common-substring-array-strings/
     """
     # Determine size of the array
@@ -266,3 +354,28 @@ def find_stem(arr):
                 res = stem
 
     return res
+
+
+def uk_to_us(text):
+    """
+    Convert UK spellings to US based on a converter.
+
+    english_spellings.csv: From http://www.tysto.com/uk-us-spelling-list.html
+
+    Parameters
+    ----------
+    text : :obj:`str`
+
+    Returns
+    -------
+    text : :obj:`str`
+    """
+    SPELL_DF = pd.read_csv(op.join(get_resource_path(), 'english_spellings.csv'),
+                           index_col='UK')
+    SPELL_DICT = SPELL_DF['US'].to_dict()
+
+    if isinstance(text, str):
+        # Convert British to American English
+        pattern = re.compile(r'\b(' + '|'.join(SPELL_DICT.keys()) + r')\b')
+        text = pattern.sub(lambda x: SPELL_DICT[x.group()], text)
+    return text

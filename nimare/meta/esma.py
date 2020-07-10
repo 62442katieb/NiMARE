@@ -8,7 +8,8 @@ import logging
 import numpy as np
 from scipy import stats
 
-from ..stats import null_to_p, p_to_z
+from ..stats import null_to_p
+from ..transforms import p_to_z
 from ..due import due
 from .. import references
 
@@ -32,6 +33,12 @@ def fishers(z_maps, two_sided=True):
     result : :obj:`dict`
         Dictionary containing maps for test statistics, p-values, and
         negative log(p) values.
+
+    References
+    ----------
+    * Fisher, R. A. (1934). Statistical methods for research workers.
+      Statistical methods for research workers., (5th Ed).
+      https://www.cabdirect.org/cabdirect/abstract/19351601205
     """
     # Get test-value signs for p-to-z conversion
     sign = np.sign(np.mean(z_maps, axis=0))
@@ -51,7 +58,13 @@ def fishers(z_maps, two_sided=True):
     z_map = p_to_z(p_map, tail='two') * sign
     log_p_map = -np.log10(p_map)
 
-    return dict(ffx_stat=ffx_stat_map, p=p_map, z=z_map, log_p=log_p_map)
+    images = {
+        'stat_desc-ffx': ffx_stat_map,
+        'p': p_map,
+        'z': z_map,
+        'logp': log_p_map,
+    }
+    return images
 
 
 @due.dcite(references.STOUFFERS, description='Stouffers citation.')
@@ -82,6 +95,13 @@ def stouffers(z_maps, inference='ffx', null='theoretical', n_iters=None,
     result : :obj:`dict`
         Dictionary containing maps for test statistics, p-values, and
         negative log(p) values.
+
+    References
+    ----------
+    * Stouffer, S. A., Suchman, E. A., DeVinney, L. C., Star, S. A., &
+      Williams Jr, R. M. (1949). The American Soldier: Adjustment during
+      army life. Studies in social psychology in World War II, vol. 1.
+      https://psycnet.apa.org/record/1950-00790-000
     """
     sign = np.sign(np.mean(z_maps, axis=0))
     sign[sign == 0] = 1
@@ -130,7 +150,7 @@ def stouffers(z_maps, inference='ffx', null='theoretical', n_iters=None,
         images = {'t': t_map,
                   'p': p_map,
                   'z': z_map,
-                  'log_p': log_p_map}
+                  'logp': log_p_map}
     elif inference == 'ffx':
         if null == 'theoretical':
             k = z_maps.shape[0]
@@ -149,7 +169,7 @@ def stouffers(z_maps, inference='ffx', null='theoretical', n_iters=None,
             log_p_map = -np.log10(p_map)
             images = {'z': z_map,
                       'p': p_map,
-                      'log_p': log_p_map}
+                      'logp': log_p_map}
         else:
             raise ValueError('Only theoretical null distribution may be used '
                              'for FFX Stouffers.')
@@ -178,6 +198,13 @@ def weighted_stouffers(z_maps, sample_sizes, two_sided=True):
     result : :obj:`dict`
         Dictionary containing maps for test statistics, p-values, and
         negative log(p) values.
+
+    References
+    ----------
+    * Zaykin, D. V. (2011). Optimally weighted Z‐test is a powerful method for
+      combining probabilities in meta‐analysis. Journal of evolutionary
+      biology, 24(8), 1836-1841.
+      https://doi.org/10.1111/j.1420-9101.2011.02297.x
     """
     assert z_maps.shape[0] == sample_sizes.shape[0]
 
@@ -196,20 +223,20 @@ def weighted_stouffers(z_maps, sample_sizes, two_sided=True):
     sign[sign == 0] = 1
     z_map = p_to_z(p_map, tail='two') * sign
     log_p_map = -np.log10(p_map)
-    images = {'ffx_stat': ffx_stat_map,
+    images = {'stat_desc-ffx': ffx_stat_map,
               'p': p_map,
               'z': z_map,
-              'log_p': log_p_map}
+              'logp': log_p_map}
     return images
 
 
-def rfx_glm(con_maps, null='theoretical', n_iters=None, two_sided=True):
+def rfx_glm(beta_maps, null='theoretical', n_iters=None, two_sided=True):
     """
     Run a random-effects (RFX) GLM on contrast maps.
 
     Parameters
     ----------
-    con_maps : (n_contrasts, n_voxels) :obj:`numpy.ndarray`
+    beta_maps : (n_contrasts, n_voxels) :obj:`numpy.ndarray`
         A 2D array of contrast maps in the same space, after masking.
     null : {'theoretical', 'empirical'}, optional
         Whether to use a theoretical null T distribution or an empirically-
@@ -228,29 +255,29 @@ def rfx_glm(con_maps, null='theoretical', n_iters=None, two_sided=True):
         negative log(p) values.
     """
     # Normalize contrast maps to have unit variance
-    con_maps = con_maps / np.std(con_maps, axis=1)[:, None]
-    t_map, p_map = stats.ttest_1samp(con_maps, popmean=0, axis=0)
+    beta_maps = beta_maps / np.std(beta_maps, axis=1)[:, None]
+    t_map, p_map = stats.ttest_1samp(beta_maps, popmean=0, axis=0)
     t_map[np.isnan(t_map)] = 0
     p_map[np.isnan(p_map)] = 1
 
     if not two_sided:
         # MATLAB one-tailed method
-        p_map = stats.t.cdf(-t_map, df=con_maps.shape[0] - 1)
+        p_map = stats.t.cdf(-t_map, df=beta_maps.shape[0] - 1)
 
     if null == 'empirical':
-        k = con_maps.shape[0]
+        k = beta_maps.shape[0]
         p_map = np.ones(t_map.shape)
         iter_t_maps = np.zeros((n_iters, t_map.shape[0]))
 
-        data_signs = np.sign(con_maps[con_maps != 0])
+        data_signs = np.sign(beta_maps[beta_maps != 0])
         data_signs[data_signs < 0] = 0
         posprop = np.mean(data_signs)
         for i in range(n_iters):
-            iter_con_maps = np.copy(con_maps)
+            iter_beta_maps = np.copy(beta_maps)
             signs = np.random.choice(a=2, size=k, p=[1 - posprop, posprop])
             signs[signs == 0] = -1
-            iter_con_maps *= signs[:, None]
-            iter_t_maps[i, :], _ = stats.ttest_1samp(iter_con_maps, popmean=0,
+            iter_beta_maps *= signs[:, None]
+            iter_t_maps[i, :], _ = stats.ttest_1samp(iter_beta_maps, popmean=0,
                                                      axis=0)
         iter_t_maps[np.isnan(iter_t_maps)] = 0
 
@@ -272,5 +299,5 @@ def rfx_glm(con_maps, null='theoretical', n_iters=None, two_sided=True):
     images = {'t': t_map,
               'z': z_map,
               'p': p_map,
-              'log_p': log_p_map}
+              'logp': log_p_map}
     return images

@@ -1,18 +1,19 @@
 """
 Classes for representing datasets of images and/or coordinates.
 """
-from __future__ import print_function
 import json
 import copy
 import logging
-import os.path as op
 
 import numpy as np
 import pandas as pd
 import nibabel as nib
 
-from .base.base import NiMAREBase
-from .utils import tal2mni, mni2tal, mm2vox, get_template, listify, try_prepend, find_stem
+from .base import NiMAREBase
+from .utils import (get_template, listify, try_prepend, get_masker,
+                    dict_to_df, dict_to_coordinates,
+                    validate_df, validate_images_df,
+                    mm2vox)
 
 LGR = logging.getLogger(__name__)
 
@@ -24,46 +25,194 @@ class Dataset(NiMAREBase):
 
     Parameters
     ----------
-    source : :obj:`str`
+    source : :obj:`str` or :obj:`dict`
         JSON file containing dictionary with database information or the dict()
         object
-    target : :obj:`str`
+    target : :obj:`str`, optional
         Desired coordinate space for coordinates. Names follow NIDM convention.
+        Default is 'mni152_2mm' (MNI space with 2x2x2 voxels).
+    mask : :obj:`str`, :class:`nibabel.nifti1.Nifti1Image`, \
+    :class:`nilearn.input_data.NiftiMasker` or similar, or None, optional
+        Mask(er) to use. If None, uses the target space image, with all
+        non-zero voxels included in the mask.
+
+    Attributes
+    ----------
+    ids : 1D :class:`numpy.ndarray`
+        Identifiers
+    masker : :class:`nilearn.input_data.NiftiMasker` or similar
+        Masker object defining the space and location of the area of interest
+        (e.g., 'brain').
+    space : :obj:`str`
+        Standard space. Same as ``target`` parameter.
+    annotations : :class:`pandas.DataFrame`
+        Labels describing studies
+    coordinates : :class:`pandas.DataFrame`
+        Peak coordinates from studies
+    images : :class:`pandas.DataFrame`
+        Images from studies
+    metadata : :class:`pandas.DataFrame`
+        Metadata describing studies
+    texts : :class:`pandas.DataFrame`
+        Texts associated with studies
+
+    Notes
+    -----
+    Images loaded into a Dataset are assumed to be in the same space.
+    If images have different resolutions or affines from the Dataset's masker,
+    then they will be resampled automatically, at the point where they're used,
+    by :obj:`Dataset.masker`.
     """
     _id_cols = ['id', 'study_id', 'contrast_id']
 
-    def __init__(self, source, target='mni152_2mm', mask_file=None):
+    def __init__(self, source, target='mni152_2mm', mask=None):
         if isinstance(source, str):
             with open(source, 'r') as f_obj:
-                self.data = json.load(f_obj)
+                data = json.load(f_obj)
         elif isinstance(source, dict):
-            self.data = source
+            data = source
         else:
             raise Exception("`source` needs to be a file path or a dictionary")
 
         # Datasets are organized by study, then experiment
         # To generate unique IDs, we combine study ID with experiment ID
-        raw_ids = []
-        for pid in self.data.keys():
-            for cid in self.data[pid]['contrasts'].keys():
-                raw_ids.append('{0}-{1}'.format(pid, cid))
-        self.ids = raw_ids
+        # build list of ids
+        id_columns = ['id', 'study_id', 'contrast_id']
+        all_ids = []
+        for pid in data.keys():
+            for expid in data[pid]['contrasts'].keys():
+                id_ = '{0}-{1}'.format(pid, expid)
+                all_ids.append([id_, pid, expid])
+        id_df = pd.DataFrame(columns=id_columns, data=all_ids)
+        id_df = id_df.set_index('id', drop=False)
+        self.__ids = id_df.index.values
 
-        if mask_file is None:
-            mask_img = get_template(target, mask='brain')
-        else:
-            mask_img = nib.load(mask_file)
-        self.mask = mask_img
+        # Set up Masker
+        if mask is None:
+            mask = get_template(target, mask='brain')
+        self.masker = mask
         self.space = target
-        self._load_coordinates()
-        self._load_images()
-        self._load_annotations()
-        self._load_texts()
-        self._load_metadata()
+
+        self.annotations = dict_to_df(id_df, data, key='labels')
+        self.coordinates = dict_to_coordinates(data, masker=self.masker, space=self.space)
+        self.images = dict_to_df(id_df, data, key='images')
+        self.metadata = dict_to_df(id_df, data, key='metadata')
+        self.texts = dict_to_df(id_df, data, key='text')
+
+    @property
+    def ids(self):
+        """array_like: 1D array of identifiers in Dataset.
+
+        There is no setter for this property, as ``Dataset.ids`` is immutable.
+        """
+        return self.__ids
+
+    @property
+    def masker(self):
+        """:class:`nilearn.input_data.NiftiMasker` or similar: Masker object
+        defining the space and location of the area of interest (e.g., 'brain').
+        """
+        return self.__masker
+
+    @masker.setter
+    def masker(self, mask):
+        mask = get_masker(mask)
+        if hasattr(self, 'masker') and not np.array_equal(
+                self.masker.mask_img.affine, mask.mask_img.affine):
+            LGR.info('New masker does not match old masker. '
+                     'Space is assumed to be the same, but coordinates will '
+                     'be transformed to new matrix.')
+            coords = self.coordinates
+            coords[['i', 'j', 'k']] = mm2vox(coords[['x', 'y', 'z']],
+                                             mask.mask_img.affine)
+            self.coordinates = coords
+        self.__masker = mask
+
+    @property
+    def annotations(self):
+        """:class:`pandas.DataFrame`: Labels describing studies in the dataset.
+
+        Each study/experiment has its own row.
+        Columns correspond to individual labels (e.g., 'emotion'), and may
+        be prefixed with a feature group including two underscores
+        (e.g., 'Neurosynth_TFIDF__emotion').
+        """
+        return self.__annotations
+
+    @annotations.setter
+    def annotations(self, df):
+        validate_df(df)
+        self.__annotations = df
+
+    @property
+    def coordinates(self):
+        """:class:`pandas.DataFrame`: Coordinates in the dataset.
+
+        Each study has one row for each peak.
+        Columns include ['x', 'y', 'z'] (peak locations in mm),
+        ['i', 'j', 'k'] (peak locations in voxel index based on Dataset's space),
+        and 'space' (Dataset's space).
+        """
+        return self.__coordinates
+
+    @coordinates.setter
+    def coordinates(self, df):
+        validate_df(df)
+        self.__coordinates = df
+
+    @property
+    def images(self):
+        """:class:`pandas.DataFrame`: Images in the dataset.
+
+        Each image type has its own column (e.g., 'z') with absolute paths to
+        files and each study has its own row.
+        Additionally, relative paths to image files are stored in columns with
+        the suffix '__relative' (e.g., 'z__relative').
+
+        Warnings
+        --------
+        Images are assumed to be in the same space, although they may have
+        different resolutions and affines. Images will be resampled as needed
+        at the point where they are used, via :obj:`Dataset.masker`.
+        """
+        return self.__images
+
+    @images.setter
+    def images(self, df):
+        validate_df(df)
+        self.__images = validate_images_df(df)
+
+    @property
+    def metadata(self):
+        """:class:`pandas.DataFrame`: Metadata describing studies in the dataset.
+
+        Each metadata field has its own column (e.g., 'sample_sizes') and each study
+        has its own row.
+        """
+        return self.__metadata
+
+    @metadata.setter
+    def metadata(self, df):
+        validate_df(df)
+        self.__metadata = df
+
+    @property
+    def texts(self):
+        """:class:`pandas.DataFrame`: Texts in the dataset.
+
+        Each text type has its own column (e.g., 'abstract') and each study
+        has its own row.
+        """
+        return self.__texts
+
+    @texts.setter
+    def texts(self, df):
+        validate_df(df)
+        self.__texts = df
 
     def slice(self, ids):
         """
-        Return a reduced dataset with only requested IDs.
+        Create a new dataset with only requested IDs.
 
         Parameters
         ----------
@@ -73,22 +222,15 @@ class Dataset(NiMAREBase):
         Returns
         -------
         new_dset : :obj:`nimare.dataset.Dataset`
-            Redcued Dataset containing only requested studies.
+            Reduced Dataset containing only requested studies.
         """
         new_dset = copy.deepcopy(self)
-        new_dset.ids = ids
+        new_dset.__ids = ids
+        new_dset.annotations = new_dset.annotations.loc[new_dset.annotations['id'].isin(ids)]
         new_dset.coordinates = new_dset.coordinates.loc[new_dset.coordinates['id'].isin(ids)]
         new_dset.images = new_dset.images.loc[new_dset.images['id'].isin(ids)]
-        new_dset.annotations = new_dset.annotations.loc[new_dset.annotations['id'].isin(ids)]
+        new_dset.metadata = new_dset.metadata.loc[new_dset.metadata['id'].isin(ids)]
         new_dset.texts = new_dset.texts.loc[new_dset.texts['id'].isin(ids)]
-        temp_data = {}
-        for id_ in ids:
-            pid, expid = id_.split('-')
-            if pid not in temp_data.keys():
-                temp_data[pid] = self.data[pid].copy()  # make sure to copy
-                temp_data[pid]['contrasts'] = {}
-            temp_data[pid]['contrasts'][expid] = self.data[pid]['contrasts'][expid]
-        new_dset.data = temp_data
         return new_dset
 
     def update_path(self, new_path):
@@ -101,278 +243,14 @@ class Dataset(NiMAREBase):
         new_path : :obj:`str`
             Path to prepend to relative paths of files in Dataset.images.
         """
-        relative_path_cols = [c for c in self.images if c.endswith('__relative')]
+        df = self.images
+        relative_path_cols = [c for c in df if c.endswith('__relative')]
         for col in relative_path_cols:
             abs_col = col.replace('__relative', '')
-            if abs_col in self.images.columns:
+            if abs_col in df.columns:
                 LGR.info('Overwriting images column {}'.format(abs_col))
-            self.images[abs_col] = self.images[col].apply(try_prepend, prefix=new_path)
-
-    def _load_annotations(self):
-        """
-        Load labels in Dataset into DataFrame.
-        """
-        # Required columns
-        columns = ['id', 'study_id', 'contrast_id']
-
-        # build list of ids
-        all_ids = []
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-                all_ids.append([id_, pid, expid])
-
-        id_df = pd.DataFrame(columns=columns, data=all_ids)
-        id_df = id_df.set_index('id', drop=False)
-
-        exp_dict = {}
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-
-                if 'labels' not in self.data[pid]['contrasts'][expid].keys():
-                    continue
-
-                exp_dict[id_] = exp['labels']
-
-        temp_df = pd.DataFrame.from_dict(exp_dict, orient='index')
-        df = pd.merge(id_df, temp_df, left_index=True, right_index=True, how='outer')
-
-        df = df.reset_index(drop=True)
-        df = df.replace(to_replace='None', value=np.nan)
-        self.annotations = df
-
-    def _load_metadata(self):
-        """
-        Load metadata in Dataset into DataFrame.
-        """
-        # Required columns
-        columns = ['id', 'study_id', 'contrast_id']
-
-        # build list of ids
-        all_ids = []
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-                all_ids.append([id_, pid, expid])
-
-        id_df = pd.DataFrame(columns=columns, data=all_ids)
-        id_df = id_df.set_index('id', drop=False)
-
-        exp_dict = {}
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-
-                if 'metadata' not in self.data[pid]['contrasts'][expid].keys():
-                    continue
-
-                exp_dict[id_] = exp['metadata']
-
-        temp_df = pd.DataFrame.from_dict(exp_dict, orient='index')
-        df = pd.merge(id_df, temp_df, left_index=True, right_index=True, how='outer')
-
-        df = df.reset_index(drop=True)
-        df = df.replace(to_replace='None', value=np.nan)
-        self.metadata = df
-
-    def _load_texts(self):
-        """
-        Load texts in Dataset into a DataFrame.
-        """
-        # Required columns
-        columns = ['id', 'study_id', 'contrast_id']
-
-        # build list of ids
-        all_ids = []
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-                all_ids.append([id_, pid, expid])
-
-        id_df = pd.DataFrame(columns=columns, data=all_ids)
-        id_df = id_df.set_index('id', drop=False)
-
-        exp_dict = {}
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-
-                if 'texts' not in self.data[pid]['contrasts'][expid].keys():
-                    continue
-
-                exp_dict[id_] = exp['texts']
-
-        temp_df = pd.DataFrame.from_dict(exp_dict, orient='index')
-        df = pd.merge(id_df, temp_df, left_index=True, right_index=True, how='outer')
-
-        df = df.reset_index(drop=True)
-        df = df.replace(to_replace='None', value=np.nan)
-        self.texts = df
-
-    def _load_images(self):
-        """
-        Load images in Dataset into a DataFrame.
-        """
-        columns = ['id', 'study_id', 'contrast_id']
-
-        # build list of ids
-        all_ids = []
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-                all_ids.append([id_, pid, expid])
-
-        id_df = pd.DataFrame(columns=columns, data=all_ids)
-        id_df = id_df.set_index('id', drop=False)
-
-        exp_dict = {}
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                exp = self.data[pid]['contrasts'][expid]
-                id_ = '{0}-{1}'.format(pid, expid)
-
-                if 'images' not in self.data[pid]['contrasts'][expid].keys():
-                    continue
-
-                exp_dict[id_] = exp['images']
-
-        temp_df = pd.DataFrame.from_dict(exp_dict, orient='index')
-        valid_suffices = ['.brik', '.head', '.nii', '.img', '.hed']
-        file_cols = []
-        for col in temp_df.columns:
-            vals = [v for v in temp_df[col].values if isinstance(v, str)]
-            fc = any([any([vs in v for vs in valid_suffices]) for v in vals])
-            if fc:
-                file_cols.append(col)
-
-        # Clean up temp_df
-        # Find out which columns have full paths and which have relative paths
-        abs_cols = []
-        for col in file_cols:
-            files = temp_df[col].tolist()
-            abspaths = [f == op.abspath(f) for f in files if isinstance(f, str)]
-            if all(abspaths):
-                abs_cols.append(col)
-            elif not any(abspaths):
-                temp_df = temp_df.rename(columns={col: col + '__relative'})
-            else:
-                raise ValueError('Mix of absolute and relative paths detected '
-                                 'for "{0}" images'.format(col))
-
-        # Set relative paths from absolute ones
-        if len(abs_cols):
-            all_files = list(np.ravel(temp_df[abs_cols].values))
-            all_files = [f for f in all_files if isinstance(f, str)]
-            shared_path = find_stem(all_files)
-            LGR.info('Shared path detected: "{0}"'.format(shared_path))
-            for abs_col in abs_cols:
-                temp_df[abs_col + '__relative'] = temp_df[abs_col].apply(
-                    lambda x: x.split(shared_path)[1] if isinstance(x, str) else x)
-
-        df = pd.merge(id_df, temp_df, left_index=True, right_index=True, how='outer')
-        df = df.reset_index(drop=True)
-        df = df.replace(to_replace='None', value=np.nan)
-
+            df[abs_col] = df[col].apply(try_prepend, prefix=new_path)
         self.images = df
-
-    def _load_coordinates(self):
-        """
-        Load coordinates in Dataset into DataFrame.
-        """
-        # Required columns
-        columns = ['id', 'study_id', 'contrast_id', 'x', 'y', 'z', 'n', 'space']
-        core_columns = columns[:]  # Used in contrast for loop
-
-        all_dfs = []
-        for pid in self.data.keys():
-            for expid in self.data[pid]['contrasts'].keys():
-                if 'coords' not in self.data[pid]['contrasts'][expid].keys():
-                    continue
-
-                exp_columns = core_columns[:]
-                exp = self.data[pid]['contrasts'][expid]
-
-                # Required info (ids, x, y, z, space)
-                n_coords = len(exp['coords']['x'])
-                rep_id = np.array([['{0}-{1}'.format(pid, expid), pid, expid]] * n_coords).T
-
-                # collect sample size if available
-                sample_size = exp.get('sample_sizes', np.nan)
-                if not isinstance(sample_size, list):
-                    sample_size = [sample_size]
-                sample_size = np.array([n for n in sample_size if n])
-                if len(sample_size):
-                    sample_size = np.mean(sample_size)
-                    sample_size = np.array([sample_size] * n_coords)
-                else:
-                    sample_size = np.array([np.nan] * n_coords)
-
-                space = exp['coords'].get('space')
-                space = np.array([space] * n_coords)
-                temp_data = np.vstack((rep_id,
-                                       np.array(exp['coords']['x']),
-                                       np.array(exp['coords']['y']),
-                                       np.array(exp['coords']['z']),
-                                       sample_size,
-                                       space))
-
-                # Optional information
-                for k in list(set(exp['coords'].keys()) - set(columns)):
-                    k_data = exp['coords'][k]
-                    if not isinstance(k_data, list):
-                        k_data = np.array([k_data] * n_coords)
-                    exp_columns.append(k)
-
-                    if k not in columns:
-                        columns.append(k)
-                    temp_data = np.vstack((temp_data, k_data))
-
-                # Place data in list of dataframes to merge
-                con_df = pd.DataFrame(temp_data.T, columns=exp_columns)
-                all_dfs.append(con_df)
-
-        df = pd.concat(all_dfs, axis=0, join='outer', sort=False)
-        df = df[columns].reset_index(drop=True)
-        df = df.replace(to_replace='None', value=np.nan)
-        df[['x', 'y', 'z']] = df[['x', 'y', 'z']].astype(float)
-
-        # Now to apply transformations!
-        if 'mni' in self.space.lower() or 'ale' in self.space.lower():
-            transform = {'MNI': None,
-                         'TAL': tal2mni,
-                         'Talairach': tal2mni,
-                         }
-        elif 'tal' in self.space.lower():
-            transform = {'MNI': mni2tal,
-                         'TAL': None,
-                         'Talairach': None,
-                         }
-        else:
-            raise ValueError('Unrecognized space: {0}'.format(self.space))
-
-        found_spaces = df['space'].unique()
-        for found_space in found_spaces:
-            if found_space not in transform.keys():
-                LGR.warning('Not applying transforms to coordinates in '
-                            'unrecognized space "{0}"'.format(found_space))
-            alg = transform.get(found_space, None)
-            idx = df['space'] == found_space
-            if alg:
-                df.loc[idx, ['x', 'y', 'z']] = alg(df.loc[idx, ['x', 'y', 'z']].values)
-            df.loc[idx, 'space'] = self.space
-
-        xyz = df[['x', 'y', 'z']].values
-        ijk = pd.DataFrame(mm2vox(xyz, self.mask.affine), columns=['i', 'j', 'k'])
-        df = pd.concat([df, ijk], axis=1)
-        self.coordinates = df
 
     def get(self, dict_):
         """
@@ -381,12 +259,20 @@ class Dataset(NiMAREBase):
         Parameters
         ----------
         dict_ : :obj:`dict`
-            Dictionary specifying images or metadata to collect
+            Dictionary specifying images or metadata to collect.
+            Keys should be variables to be used as keys for results dictionary.
+            Values should be tuples with two values:
+            type (e.g., 'image' or 'metadata') and specific field corresponding
+            to column of type-specific DataFrame (e.g., 'z' or 'sample_sizes').
 
         Returns
         -------
         results : :obj:`dict`
             A dictionary of lists of requested data.
+
+        Examples
+        --------
+        >>> dset.get({'z_maps': ('image', 'z'), 'sample_sizes': ('metadata', 'sample_sizes')})
         """
         results = {}
         results['id'] = self.ids
@@ -397,6 +283,8 @@ class Dataset(NiMAREBase):
                 temp = self.get_images(imtype=vals[1])
             elif vals[0] == 'metadata':
                 temp = self.get_metadata(field=vals[1])
+            elif vals[0] == 'coordinates':
+                temp = [self.coordinates.loc[self.coordinates['id'] == id_] for id_ in self.ids]
             else:
                 raise ValueError('Input "{}" not understood.'.format(vals[0]))
             results[k] = temp
@@ -410,6 +298,8 @@ class Dataset(NiMAREBase):
 
         for k in results:
             results[k] = [results[k][i] for i in keep_idx]
+            if dict_.get(k, [None])[0] == 'coordinates':
+                results[k] = pd.concat(results[k])
         return results
 
     def get_labels(self, ids=None):
@@ -418,13 +308,13 @@ class Dataset(NiMAREBase):
 
         Parameters
         ----------
-        ids : list, optional
+        ids : :obj:`list`, optional
             A list of IDs in the Dataset for which to find labels. Default is
             None, in which case all labels are returned.
 
         Returns
         -------
-        labels : list
+        labels : :obj:`list`
             List of labels for which there are annotations in the Dataset.
         """
         if not isinstance(ids, list) and ids is not None:
@@ -438,38 +328,51 @@ class Dataset(NiMAREBase):
 
         return result
 
-    def get_texts(self, ids=None, text_type='abstract'):
+    def get_texts(self, ids=None, text_type=None):
         """
         Extract list of texts of a given type for selected IDs.
 
         Parameters
         ----------
-        ids : list, optional
+        ids : :obj:`list`, optional
             A list of IDs in the Dataset for which to find texts. Default is
             None, in which case all texts of requested type are returned.
-        text_type : str, optional
+        text_type : :obj:`str`, optional
             Type of text to extract. Corresponds to column name in
-            Dataset.texts DataFrame. Default is 'abstract'.
+            Dataset.texts DataFrame. Default is None.
 
         Returns
         -------
-        texts : list
+        texts : :obj:`list`
             List of texts of requested type for selected IDs.
         """
+        # Rename variables
+        value = text_type
+        df = self.texts
+
         return_first = False
-        if not isinstance(ids, list) and ids is not None:
+        if isinstance(ids, str) and value is not None:
             return_first = True
-            ids = listify(ids)
+        ids = listify(ids)
 
-        text_types = [c for c in self.texts.columns if c not in self._id_cols]
-        if text_type not in text_types:
-            raise ValueError('Text type "{0}" not found.\nAvailable types: '
-                             '{1}'.format(text_type, ', '.join(text_types)))
+        available_types = [c for c in df.columns if c not in self._id_cols]
+        if (value is not None) and (value not in available_types):
+            raise ValueError('Text type "{0}" not found.\n'
+                             'Available types: '
+                             '{1}'.format(value, ', '.join(available_types)))
 
-        if ids is not None:
-            result = self.texts[text_type].loc[self.texts['id'].isin(ids)]
+        if value is not None:
+            if ids is not None:
+                result = df[value].loc[df['id'].isin(ids)].tolist()
+            else:
+                result = df[value].tolist()
         else:
-            result = self.texts[text_type]
+            if ids is not None:
+                result = {v: df[v].loc[df['id'].isin(ids)].tolist() for v in available_types}
+                result = {k: v for k, v in result.items() if any(v)}
+            else:
+                result = {v: df[v].tolist() for v in available_types}
+            result = list(result.keys())
 
         if return_first:
             return result[0]
@@ -478,80 +381,105 @@ class Dataset(NiMAREBase):
 
         return result
 
-    def get_metadata(self, ids=None, field='sample_sizes'):
+    def get_metadata(self, ids=None, field=None):
         """
         Get metadata from Dataset.
 
         Parameters
         ----------
-        ids : list, optional
+        ids : :obj:`list`, optional
             A list of IDs in the Dataset for which to find texts. Default is
             None, in which case all texts of requested type are returned.
-        field : str, optional
+        field : :obj:`str`, optional
             Metadata field to extract. Corresponds to column name in
-            Dataset.metadata DataFrame. Default is 'sample_sizes'.
+            Dataset.metadata DataFrame. Default is None.
 
         Returns
         -------
-        metadata : list
+        metadata : :obj:`list`
             List of values of requested type for selected IDs.
-
-        Warnings
-        --------
-        This method is not yet implemented.
         """
+        # Rename variables
+        value = field
+        df = self.metadata
+
         return_first = False
-        if not isinstance(ids, list) and ids is not None:
+        if isinstance(ids, str) and value is not None:
             return_first = True
-            ids = listify(ids)
+        ids = listify(ids)
 
-        md_fields = [c for c in self.metadata.columns if c not in self._id_cols]
-        if field not in md_fields:
-            raise ValueError('Metadata field "{0}" not found.\nAvailable fields: '
-                             '{1}'.format(field, ', '.join(md_fields)))
+        available_types = [c for c in df.columns if c not in self._id_cols]
+        if (value is not None) and (value not in available_types):
+            raise ValueError('Metadata field "{0}" not found.\n'
+                             'Available fields: '
+                             '{1}'.format(field, ', '.join(available_types)))
 
-        if ids is not None:
-            result = self.metadata[field].loc[self.metadata['id'].isin(ids)].tolist()
+        if value is not None:
+            if ids is not None:
+                result = df[value].loc[df['id'].isin(ids)].tolist()
+            else:
+                result = df[value].tolist()
         else:
-            result = self.metadata[field].tolist()
+            if ids is not None:
+                result = {v: df[v].loc[df['id'].isin(ids)].tolist() for v in available_types}
+                result = {k: v for k, v in result.items() if any(v)}
+            else:
+                result = {v: df[v].tolist() for v in available_types}
+            result = list(result.keys())
 
         if return_first:
             return result[0]
         else:
             return result
 
-    def get_images(self, ids=None, imtype='z'):
+    def get_images(self, ids=None, imtype=None):
         """
         Get images of a certain type for a subset of studies in the dataset.
 
         Parameters
         ----------
-        ids : list, optional
+        ids : :obj:`list`, optional
             A list of IDs in the Dataset for which to find texts. Default is
             None, in which case all texts of requested type are returned.
-        imtype : str, optional
+        imtype : :obj:`str`, optional
             Type of image to extract. Corresponds to column name in
-            Dataset.images DataFrame. Default is 'z'.
+            Dataset.images DataFrame. Default is None.
 
         Returns
         -------
-        images : list
+        images : :obj:`list`
             List of images of requested type for selected IDs.
         """
+        # Rename variables
+        value = imtype
+        df = self.images
+
         return_first = False
-        if not isinstance(ids, list) and ids is not None:
+        if isinstance(ids, str) and value is not None:
             return_first = True
-            ids = listify(ids)
+        ids = listify(ids)
 
-        imtypes = [c for c in self.images.columns if c not in self._id_cols]
-        if imtype not in imtypes:
-            raise ValueError('Image type "{0}" not found.\nAvailable types: '
-                             '{1}'.format(imtype, ', '.join(imtypes)))
+        metadata_fields = ['space']
+        available_types = [c for c in df.columns if c not in self._id_cols]
+        available_types = [c for c in available_types if not c.endswith('__relative')]
+        available_types = [c for c in available_types if c not in metadata_fields]
+        if (value is not None) and (value not in available_types):
+            raise ValueError('Image type "{0}" not found.\n'
+                             'Available types: '
+                             '{1}'.format(value, ', '.join(available_types)))
 
-        if ids is not None:
-            result = self.images[imtype].loc[self.images['id'].isin(ids)].tolist()
+        if value is not None:
+            if ids is not None:
+                result = self.images[value].loc[self.images['id'].isin(ids)].tolist()
+            else:
+                result = self.images[value].tolist()
         else:
-            result = self.images[imtype].tolist()
+            if ids is not None:
+                result = {v: df[v].loc[df['id'].isin(ids)].tolist() for v in available_types}
+                result = {k: v for k, v in result.items() if any(v)}
+            else:
+                result = {v: df[v].tolist() for v in available_types}
+            result = list(result.keys())
 
         if return_first:
             return result[0]
@@ -564,16 +492,16 @@ class Dataset(NiMAREBase):
 
         Parameters
         ----------
-        labels : list, optional
+        labels : :obj:`list`, optional
             List of labels to use to search Dataset. If a contrast has all of
             the labels above the threshold, it will be returned.
             Default is None.
-        label_threshold : float, optional
+        label_threshold : :obj:`float`, optional
             Default is 0.5.
 
         Returns
         -------
-        found_ids : list
+        found_ids : :obj:`list`
             A list of IDs from the Dataset found by the search criteria.
         """
         if isinstance(labels, str):
@@ -584,7 +512,7 @@ class Dataset(NiMAREBase):
         elif not isinstance(labels, list):
             raise ValueError('Argument "labels" cannot be {0}'.format(type(labels)))
 
-        found_labels = [l for l in labels if l in self.annotations.columns]
+        found_labels = [label for label in labels if label in self.annotations.columns]
         temp_annotations = self.annotations[self._id_cols + found_labels]
         found_rows = (temp_annotations[found_labels] >= label_threshold).all(axis=1)
         if any(found_rows):
@@ -604,17 +532,18 @@ class Dataset(NiMAREBase):
 
         Returns
         -------
-        found_ids : list
+        found_ids : :obj:`list`
             A list of IDs from the Dataset with at least one focus in the mask.
         """
         from scipy.spatial.distance import cdist
         if isinstance(mask, str):
             mask = nib.load(mask)
 
-        if not np.array_equal(self.mask.affine, mask.affine):
+        dset_mask = self.masker.mask_img
+        if not np.array_equal(dset_mask.affine, mask.affine):
             from nilearn.image import resample_to_img
-            mask = resample_to_img(mask, self.mask)
-        mask_ijk = np.vstack(np.where(mask.get_data())).T
+            mask = resample_to_img(mask, dset_mask, interpolation='nearest')
+        mask_ijk = np.vstack(np.where(mask.get_fdata())).T
         distances = cdist(mask_ijk, self.coordinates[['i', 'j', 'k']].values)
         distances = np.any(distances == 0, axis=0)
         found_ids = list(self.coordinates.loc[distances, 'id'].unique())
@@ -629,16 +558,17 @@ class Dataset(NiMAREBase):
         ----------
         xyz : (X x 3) array_like
             List of coordinates against which to find studies.
-        r : float, optional
+        r : :obj:`float`, optional
             Radius (in mm) within which to find studies. Default is 20mm.
 
         Returns
         -------
-        found_ids : list
+        found_ids : :obj:`list`
             A list of IDs from the Dataset with at least one focus within
             radius r of requested coordinates.
         """
         from scipy.spatial.distance import cdist
+        xyz = np.array(xyz)
         assert xyz.shape[1] == 3 and xyz.ndim == 2
         distances = cdist(xyz, self.coordinates[['x', 'y', 'z']].values)
         distances = np.any(distances <= r, axis=0)

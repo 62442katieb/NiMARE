@@ -8,8 +8,15 @@ coverage:
       default:
         # basic
         target: 0
-        threshold: null
+        threshold: 0
     patch:
       default:
         target: 0
-        threshold: null
+        threshold: 0
+
+ignore:
+  - 'nimare/tests/'
+  - 'nimare/due.py'
+  - 'nimare/_version.py'
+  - 'nimare/info.py'
+  - 'nimare/references.py'

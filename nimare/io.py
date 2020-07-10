@@ -33,6 +33,10 @@ def convert_neurosynth_to_dict(text_file, annotations_file=None):
     if annotations_file is not None:
         label_df = pd.read_csv(annotations_file, sep='\t', index_col='pmid')
         label_df.index = label_df.index.astype(str)
+        labels = label_df.columns
+        if not all('__' in label for label in labels):
+            labels = {label: 'Neurosynth_TFIDF__' + label for label in labels}
+        label_df = label_df.rename(columns=labels)
     else:
         label_df = None
 
@@ -50,6 +54,11 @@ def convert_neurosynth_to_dict(text_file, annotations_file=None):
         study_dict['metadata']['title'] = study_df['title'].tolist()[0]
         study_dict['contrasts'] = {}
         study_dict['contrasts']['1'] = {}
+        study_dict['contrasts']['1']['metadata'] = {}
+        study_dict['contrasts']['1']['metadata']['authors'] = study_df['authors'].tolist()[0]
+        study_dict['contrasts']['1']['metadata']['journal'] = study_df['journal'].tolist()[0]
+        study_dict['contrasts']['1']['metadata']['year'] = study_df['year'].tolist()[0]
+        study_dict['contrasts']['1']['metadata']['title'] = study_df['title'].tolist()[0]
         study_dict['contrasts']['1']['coords'] = {}
         study_dict['contrasts']['1']['coords']['space'] = study_df['space'].tolist()[0]
         study_dict['contrasts']['1']['coords']['x'] = study_df['x'].tolist()
@@ -117,7 +126,7 @@ def convert_sleuth_to_dict(text_file):
 
     Returns
     -------
-    dict_ : :obj:`dict`
+    :obj:`dict`
         NiMARE-organized dictionary containing experiment information from text
         file.
     """
@@ -134,14 +143,14 @@ def convert_sleuth_to_dict(text_file):
 
     SPACE_OPTS = ['MNI', 'TAL', 'Talairach']
     if space not in SPACE_OPTS:
-        raise Exception('Space {0} unknown. Options supported: '
-                        '{0}.'.format(space, ', '.format(SPACE_OPTS)))
+        raise Exception('Space {0} unknown. Options supported: {1}.'.format(
+            space, ', '.join(SPACE_OPTS)))
 
     # Split into experiments
     data = data[1:]
     exp_idx = []
     for i in np.arange(0, len(data)):
-        if data[i].startswith('//') and data[i + 1].startswith('// Subjects') and data[i - 1].startswith('//') is False:
+        if data[i].startswith('//') and data[i + 1].startswith('// Subjects') and not data[i - 1].startswith('//'):
             exp_idx.append(i)
         elif data[i].startswith('//') and i + 2 < len(data) and data[i + 2].startswith('// Subjects'):
             exp_idx.append(i)
@@ -193,14 +202,14 @@ def convert_sleuth_to_dict(text_file):
                 dict_[study_name] = {'contrasts': {}}
             dict_[study_name]['contrasts'][contrast_name] = {
                 'coords': {},
-                'sample_sizes': [],
+                'metadata': {},
             }
             dict_[study_name]['contrasts'][contrast_name]['coords'][
                 'space'] = space
             dict_[study_name]['contrasts'][contrast_name]['coords']['x'] = x
             dict_[study_name]['contrasts'][contrast_name]['coords']['y'] = y
             dict_[study_name]['contrasts'][contrast_name]['coords']['z'] = z
-            dict_[study_name]['contrasts'][contrast_name][
+            dict_[study_name]['contrasts'][contrast_name]['metadata'][
                 'sample_sizes'] = [sample_size]
     return dict_
 

@@ -1,0 +1,114 @@
+"""
+Test nimare.transforms
+"""
+import os.path as op
+import math
+
+import numpy as np
+import nibabel as nib
+
+from nimare import transforms, utils
+
+
+def test_transform_images(testdata):
+    """Smoke test on transforms.transform_images
+    """
+    dset = testdata['dset_betase']
+    z_files = dset.images['z'].tolist()
+    new_images = transforms.transform_images(
+        dset.images, target='z', masker=dset.masker, metadata_df=dset.metadata
+    )
+    new_z_files = new_images['z'].tolist()
+    assert z_files[10:] == new_z_files[10:]
+    assert all([nzf is not None for nzf in new_z_files])
+
+    new_images = transforms.transform_images(
+        dset.images, target='varcope', masker=dset.masker, metadata_df=dset.metadata
+    )
+    varcope_files = new_images['varcope'].tolist()
+    assert 'varcope' not in dset.images.columns
+    assert all([vf is not None for vf in varcope_files])
+
+
+def test_sample_sizes_to_dof():
+    """Unit tests for transforms.sample_sizes_to_dof
+    """
+    sample_sizes = [20, 20, 20]
+    dof = 57
+    assert transforms.sample_sizes_to_dof(sample_sizes) == dof
+    sample_sizes = [20]
+    dof = 19
+    assert transforms.sample_sizes_to_dof(sample_sizes) == dof
+
+
+def test_sample_sizes_to_sample_size():
+    """Unit tests for transforms.sample_sizes_to_sample_size
+    """
+    sample_sizes = [20, 20, 20]
+    sample_size = 60
+    assert transforms.sample_sizes_to_sample_size(sample_sizes) == sample_size
+    sample_sizes = [20]
+    sample_size = 20
+    assert transforms.sample_sizes_to_sample_size(sample_sizes) == sample_size
+
+
+def test_t_to_z():
+    """Smoke test
+    """
+    t_arr = np.random.random(100)
+    z_arr = transforms.t_to_z(t_arr, dof=20)
+    assert z_arr.shape == t_arr.shape
+    t_arr2 = transforms.z_to_t(z_arr, dof=20)
+    assert np.allclose(t_arr, t_arr2)
+
+
+def test_tal2mni():
+    """
+    TODO: Get converted coords from official site.
+    """
+    test = np.array([[-44, 31, 27],
+                     [20, -32, 14],
+                     [28, -76, 28]])
+    true = np.array([[-45.83997568, 35.97904559, 23.55194326],
+                     [22.69248975, -31.34145016, 13.91284087],
+                     [31.53113226, -76.61685748, 33.22105166]])
+    assert np.allclose(transforms.tal2mni(test), true)
+
+
+def test_mni2tal():
+    """
+    TODO: Get converted coords from official site.
+    """
+    test = np.array([[-44, 31, 27],
+                     [20, -32, 14],
+                     [28, -76, 28]])
+    true = np.array([[-42.3176, 26.0594, 29.7364],
+                     [17.4781, -32.6076, 14.0009],
+                     [24.7353, -75.0184, 23.3283]])
+    assert np.allclose(transforms.mni2tal(test), true)
+
+
+def test_vox2mm():
+    """
+    Test vox2mm
+    """
+    test = np.array([[20, 20, 20],
+                     [0, 0, 0]])
+    true = np.array([[50., -86., -32.],
+                     [90., -126., -72.]])
+    img = utils.get_template(space='mni152_2mm', mask=None)
+    aff = img.affine
+    assert np.array_equal(transforms.vox2mm(test, aff), true)
+
+
+def test_mm2vox():
+    """
+    Test mm2vox
+    """
+    test = np.array([[20, 20, 20],
+                     [0, 0, 0]])
+    true = np.array([[35., 73., 46.],
+                     [45., 63., 36.]])
+    img = utils.get_template(space='mni152_2mm', mask=None)
+    aff = img.affine
+    assert np.array_equal(transforms.mm2vox(test, aff), true)

@@ -14,7 +14,7 @@ from .. import references
            description='Introduced text2brain models for annotation.')
 def text2brain():
     """
-    Perform text-to-image encoding with the text2brain model [1]_.
+    Perform text-to-image encoding with the text2brain model.
 
     Warnings
     --------
@@ -22,20 +22,21 @@ def text2brain():
 
     References
     ----------
-    .. [1] Dockès, Jérôme, et al. "Text to brain: predicting the spatial
-        distribution of neuroimaging observations from text reports."
-        International Conference on Medical Image Computing and
-        Computer-Assisted Intervention. Springer, Cham, 2018.
-        https://doi.org/10.1007/978-3-030-00931-1_67
+    * Dockès, Jérôme, et al. "Text to brain: predicting the spatial
+      distribution of neuroimaging observations from text reports."
+      International Conference on Medical Image Computing and
+      Computer-Assisted Intervention. Springer, Cham, 2018.
+      https://doi.org/10.1007/978-3-030-00931-1_67
     """
     pass
 
 
 @due.dcite(references.GCLDA_DECODING, description='Citation for GCLDA encoding.')
-def encode_gclda(model, text, out_file=None, topic_priors=None,
+def gclda_encode(model, text, out_file=None, topic_priors=None,
                  prior_weight=1.):
     r"""
-    Perform text-to-image encoding according to the method described in [1]_.
+    Perform text-to-image encoding according to the method described in
+    Rubin et al. (2017).
 
     Parameters
     ----------
@@ -68,7 +69,7 @@ def encode_gclda(model, text, out_file=None, topic_priors=None,
     :math:`t`                 Topic
     :math:`w`                 Word type
     :math:`h`                 Input text
-    :math:`p(v|t)`            Probability of topic given voxel (``p_topic_g_voxel``)
+    :math:`p(v|t)`            Probability of voxel given topic (``p_voxel_g_topic_``)
     :math:`\\tau_{t}`          Topic weight vector (``topic_weights``)
     :math:`p(w|t)`            Probability of word type given topic (``p_word_g_topic``)
     :math:`\omega`            1d array from input image (``input_values``)
@@ -76,7 +77,7 @@ def encode_gclda(model, text, out_file=None, topic_priors=None,
 
     1.  Compute :math:`p(v|t)`
         (``p_voxel_g_topic``).
-            - From :obj:`gclda.model.Model.get_spatial_probs()`
+            - From :func:`gclda.model.Model.get_spatial_probs()`
     2.  Compute :math:`p(t|w)`
         (``p_topic_g_word``).
     3.  Vectorize input text according to model vocabulary.
@@ -93,12 +94,18 @@ def encode_gclda(model, text, out_file=None, topic_priors=None,
         voxel weights for the input text.
     9.  Unmask and reshape ``voxel_weights`` into brain image.
 
+    See Also
+    --------
+    :class:`nimare.annotate.gclda.GCLDAModel`
+    :func:`nimare.decode.continuous.gclda_decode_map`
+    :func:`nimare.decode.discrete.gclda_decode_roi`
+
     References
     ----------
-    .. [1] Rubin, Timothy N., et al. "Decoding brain activity using a
-        large-scale probabilistic functional-anatomical atlas of human
-        cognition." PLoS computational biology 13.10 (2017): e1005649.
-        https://doi.org/10.1371/journal.pcbi.1005649
+    * Rubin, Timothy N., et al. "Decoding brain activity using a
+      large-scale probabilistic functional-anatomical atlas of human
+      cognition." PLoS computational biology 13.10 (2017): e1005649.
+      https://doi.org/10.1371/journal.pcbi.1005649
     """
     if isinstance(text, list):
         text = ' '.join(text)
@@ -116,14 +123,14 @@ def encode_gclda(model, text, out_file=None, topic_priors=None,
     # n_topics_per_word_token = np.sum(model.n_word_tokens_word_by_topic, axis=1)
     # p_topic_g_word = model.n_word_tokens_word_by_topic / n_topics_per_word_token[:, None]
     # p_topic_g_word = np.nan_to_num(p_topic_g_word, 0)
-    p_topic_g_text = model.p_topic_g_word[keep_idx]  # p(T|W) for words in text only
+    p_topic_g_text = model.p_topic_g_word_[keep_idx]  # p(T|W) for words in text only
     prod = p_topic_g_text * text_counts[:, None]  # Multiply p(T|W) by words in text
     topic_weights = np.sum(prod, axis=0)  # Sum across words
     if topic_priors is not None:
         weighted_priors = weight_priors(topic_priors, prior_weight)
         topic_weights *= weighted_priors
 
-    voxel_weights = np.dot(model.p_voxel_g_topic, topic_weights)
+    voxel_weights = np.dot(model.p_voxel_g_topic_, topic_weights)
     img = unmask(voxel_weights, model.mask)
 
     if out_file is not None:

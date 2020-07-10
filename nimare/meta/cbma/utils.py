@@ -2,22 +2,17 @@
 Utilities for coordinate-based meta-analysis estimators
 """
 import os
-import math
 import logging
-import requests
-from io import BytesIO
-from tarfile import TarFile
 
 import numpy as np
 import numpy.linalg as npl
 import nibabel as nb
 from scipy import ndimage
-from lzma import LZMAFile
-from tqdm.auto import tqdm
 
 from .peaks2maps import model_fn
 from ...due import due
 from ... import references
+from ...extract import download_peaks2maps_model
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 LGR = logging.getLogger(__name__)
@@ -53,35 +48,6 @@ def _get_generator(contrasts_coordinates, target_shape, affine,
             yield (encoded_coords, encoded_coords)
 
     return generator
-
-
-def _get_checkpoint_dir():
-    from appdirs import AppDirs
-    dirs = AppDirs(appname="nimare", appauthor="neurostuff", version="1.0")
-    checkpoint_dir = os.path.join(dirs.user_data_dir, "ohbm2018_model")
-    if not os.path.exists(checkpoint_dir):
-        LGR.info('Downloading the model (this is a one-off operation)...')
-        url = "https://zenodo.org/record/1257721/files/ohbm2018_model.tar.xz?download=1"
-        # Streaming, so we can iterate over the response.
-        r = requests.get(url, stream=True)
-        f = BytesIO()
-
-        # Total size in bytes.
-        total_size = int(r.headers.get('content-length', 0))
-        block_size = 1024 * 1024
-        wrote = 0
-        for data in tqdm(r.iter_content(block_size), total=math.ceil(total_size // block_size),
-                         unit='MB', unit_scale=True):
-            wrote = wrote + len(data)
-            f.write(data)
-        if total_size != 0 and wrote != total_size:
-            raise Exception("Download interrupted")
-
-        f.seek(0)
-        LGR.info('Uncompressing the model to %s...'.format(checkpoint_dir))
-        tarfile = TarFile(fileobj=LZMAFile(f), mode="r")
-        tarfile.extractall(dirs.user_data_dir)
-    return checkpoint_dir
 
 
 @due.dcite(references.PEAKS2MAPS,
@@ -131,7 +97,7 @@ def peaks2maps(contrasts_coordinates, skip_out_of_bounds=True,
         iterator = dataset.make_one_shot_iterator()
         return iterator.get_next()
 
-    model_dir = _get_checkpoint_dir()
+    model_dir = download_peaks2maps_model()
     model = tf.estimator.Estimator(model_fn, model_dir=model_dir)
 
     results = model.predict(generate_input_fn)
@@ -144,7 +110,7 @@ def peaks2maps(contrasts_coordinates, skip_out_of_bounds=True,
 
 def compute_ma(shape, ijk, kernel):
     """
-    Generate modeled activation (MA) maps.
+    Generate ALE modeled activation (MA) maps.
     Replaces the values around each focus in ijk with the contrast-specific
     kernel. Takes the element-wise maximum when looping through foci, which
     accounts for foci which are near to one another and may have overlapping
@@ -194,21 +160,21 @@ def compute_ma(shape, ijk, kernel):
 
 @due.dcite(references.ALE_KERNEL,
            description='Introduces sample size-dependent kernels to ALE.')
-def get_ale_kernel(img, n=None, fwhm=None):
+def get_ale_kernel(img, sample_size=None, fwhm=None):
     """
     Estimate 3D Gaussian and sigma (in voxels) for ALE kernel given
-    sample size (n) or fwhm (in mm).
+    sample size (sample_size) or fwhm (in mm).
     """
-    if n is not None and fwhm is not None:
-        raise ValueError('Only one of n and fwhm may be specified')
-    elif n is None and fwhm is None:
-        raise ValueError('Either n or fwhm must be provided')
-    elif n is not None:
+    if sample_size is not None and fwhm is not None:
+        raise ValueError('Only one of "sample_size" and "fwhm" may be specified')
+    elif sample_size is None and fwhm is None:
+        raise ValueError('Either "sample_size" or "fwhm" must be provided')
+    elif sample_size is not None:
         uncertain_templates = (5.7 / (2. * np.sqrt(2. / np.pi)) *
                                np.sqrt(8. * np.log(2.)))  # pylint: disable=no-member
         # Assuming 11.6 mm ED between matching points
         uncertain_subjects = (11.6 / (2 * np.sqrt(2 / np.pi)) *
-                              np.sqrt(8 * np.log(2))) / np.sqrt(n)  # pylint: disable=no-member
+                              np.sqrt(8 * np.log(2))) / np.sqrt(sample_size)  # pylint: disable=no-member
         fwhm = np.sqrt(uncertain_subjects ** 2 + uncertain_templates ** 2)
 
     fwhm_vox = fwhm / np.sqrt(np.prod(img.header.get_zooms()))
