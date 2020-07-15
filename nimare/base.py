@@ -287,7 +287,15 @@ class MetaEstimator(Estimator):
             if type_ == 'image':
                 # Mask required input images using either the dataset's mask or
                 # the estimator's.
-                self.inputs_[name] = masker.transform(self.inputs_[name])
+                temp_arr = masker.transform(self.inputs_[name])
+
+                # An intermediate step to mask out bad voxels. Can be dropped
+                # once PyMARE is able to handle masked arrays or missing data.
+                bad_voxel_idx = np.where(temp_arr == 0)[1]
+                bad_voxel_idx = np.unique(bad_voxel_idx)
+                temp_arr[:, bad_voxel_idx] = 0
+
+                self.inputs_[name] = temp_arr
             elif type_ == 'coordinates':
                 self.inputs_[name] = dataset.coordinates.copy()
 
@@ -378,7 +386,7 @@ class Transformer(NiMAREBase):
 
 class KernelTransformer(Transformer):
     """Base class for modeled activation-generating methods in
-    :mod:`nimare.meta.cbma.kernel`.
+    :mod:`nimare.meta.kernel`.
 
     Coordinate-based meta-analyses leverage coordinates reported in
     neuroimaging papers to simulate the thresholded statistical maps from the
@@ -427,6 +435,8 @@ class Decoder(NiMAREBase):
         # At least one study in the dataset much have each label
         counts = (dataset.annotations[features] > self.frequency_threshold).sum(0)
         features = counts[counts > 0].index.tolist()
+        if not len(features):
+            raise Exception('No features identified in Dataset!')
         self.features_ = features
 
     def fit(self, dataset):
