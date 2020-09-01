@@ -3,13 +3,13 @@
 import logging
 import os.path as op
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 from scipy import stats
 from scipy.special import ndtri
 
-from .due import due
 from . import references, utils
+from .due import due
 
 LGR = logging.getLogger(__name__)
 
@@ -43,22 +43,22 @@ def transform_images(images_df, target, masker, metadata_df=None, out_dir=None):
     """
     images_df = images_df.copy()
 
-    valid_targets = ['z', 'beta', 'varcope']
+    valid_targets = ["z", "beta", "varcope"]
     if target not in valid_targets:
-        raise ValueError('Target type must be one of: {}'.format(', '.join(valid_targets)))
+        raise ValueError("Target type must be one of: {}".format(", ".join(valid_targets)))
     mask_img = masker.mask_img
     new_mask = np.ones(mask_img.shape, int)
     new_mask = nib.Nifti1Image(new_mask, mask_img.affine, header=mask_img.header)
     new_masker = utils.get_masker(new_mask)
     res = masker.mask_img.header.get_zooms()
-    res = 'x'.join([str(r) for r in res])
+    res = "x".join([str(r) for r in res])
     if target not in images_df.columns:
-        target_ids = images_df['id'].values
+        target_ids = images_df["id"].values
     else:
-        target_ids = images_df.loc[images_df[target].isnull(), 'id']
+        target_ids = images_df.loc[images_df[target].isnull(), "id"]
 
     for id_ in target_ids:
-        row = images_df.loc[images_df['id'] == id_].iloc[0]
+        row = images_df.loc[images_df["id"] == id_].iloc[0]
 
         # Determine output filename, if file can be generated
         if out_dir is None:
@@ -66,12 +66,14 @@ def transform_images(images_df, target, masker, metadata_df=None, out_dir=None):
             id_out_dir = op.dirname(options[0])
         else:
             id_out_dir = out_dir
-        new_file = op.join(id_out_dir, f'{id_}_{res}_{target}.nii.gz')
+        new_file = op.join(
+            id_out_dir, "{id_}_{res}_{target}.nii.gz".format(id_=id_, res=res, target=target)
+        )
 
         # Grab columns with actual values
         available_data = row[~row.isnull()].to_dict()
         if metadata_df is not None:
-            metadata_row = metadata_df.loc[metadata_df['id'] == id_].iloc[0]
+            metadata_row = metadata_df.loc[metadata_df["id"] == id_].iloc[0]
             metadata = metadata_row[~metadata_row.isnull()].to_dict()
             for k, v in metadata.items():
                 if k not in available_data.keys():
@@ -81,9 +83,9 @@ def transform_images(images_df, target, masker, metadata_df=None, out_dir=None):
         img = resolve_transforms(target, available_data, new_masker)
         if img is not None:
             img.to_filename(new_file)
-            images_df.loc[images_df['id'] == id_, target] = new_file
+            images_df.loc[images_df["id"] == id_, target] = new_file
         else:
-            images_df.loc[images_df['id'] == id_, target] = None
+            images_df.loc[images_df["id"] == id_, target] = None
     return images_df
 
 
@@ -113,71 +115,72 @@ def resolve_transforms(target, available_data, masker):
         LGR.warning('Target "{}" already available.'.format(target))
         return available_data[target]
 
-    if target == 'z':
-        if ('t' in available_data.keys()) and ('sample_sizes' in available_data.keys()):
-            dof = sample_sizes_to_dof(available_data['sample_sizes'])
-            t = masker.transform(available_data['t'])
+    if target == "z":
+        if ("t" in available_data.keys()) and ("sample_sizes" in available_data.keys()):
+            dof = sample_sizes_to_dof(available_data["sample_sizes"])
+            t = masker.transform(available_data["t"])
             z = t_to_z(t, dof)
-        elif ('p' in available_data.keys()):
-            p = masker.transform(available_data['p'])
+        elif "p" in available_data.keys():
+            p = masker.transform(available_data["p"])
             z = p_to_z(p)
         else:
             return None
         z = masker.inverse_transform(z)
         return z
-    elif target == 't':
+    elif target == "t":
         # will return none given no transform/target exists
-        temp = resolve_transforms('z', available_data, masker)
+        temp = resolve_transforms("z", available_data, masker)
         if temp is not None:
-            available_data['z'] = temp
+            available_data["z"] = temp
 
-        if ('z' in available_data.keys()) and ('sample_sizes' in available_data.keys()):
-            dof = sample_sizes_to_dof(available_data['sample_sizes'])
-            z = masker.transform(available_data['z'])
+        if ("z" in available_data.keys()) and ("sample_sizes" in available_data.keys()):
+            dof = sample_sizes_to_dof(available_data["sample_sizes"])
+            z = masker.transform(available_data["z"])
             t = z_to_t(z, dof)
             t = masker.inverse_transform(t)
             return t
         else:
             return None
-    elif target == 'beta':
-        if ('t' not in available_data.keys()):
+    elif target == "beta":
+        if "t" not in available_data.keys():
             # will return none given no transform/target exists
-            temp = resolve_transforms('t', available_data, masker)
+            temp = resolve_transforms("t", available_data, masker)
             if temp is not None:
-                available_data['t'] = temp
+                available_data["t"] = temp
 
-        if ('varcope' not in available_data.keys()):
-            temp = resolve_transforms('varcope', available_data, masker)
+        if "varcope" not in available_data.keys():
+            temp = resolve_transforms("varcope", available_data, masker)
             if temp is not None:
-                available_data['varcope'] = temp
+                available_data["varcope"] = temp
 
-        if ('t' in available_data.keys()) and ('varcope' in available_data.keys()):
-            t = masker.transform(available_data['t'])
-            varcope = masker.transform(available_data['varcope'])
+        if ("t" in available_data.keys()) and ("varcope" in available_data.keys()):
+            t = masker.transform(available_data["t"])
+            varcope = masker.transform(available_data["varcope"])
             beta = t_and_varcope_to_beta(t, varcope)
             beta = masker.inverse_transform(beta)
             return beta
         else:
             return None
-    elif target == 'varcope':
-        if ('se' in available_data.keys()):
-            se = masker.transform(available_data['se'])
+    elif target == "varcope":
+        if "se" in available_data.keys():
+            se = masker.transform(available_data["se"])
             varcope = se_to_varcope(se)
             varcope = masker.inverse_transform(varcope)
-        elif ('samplevar_dataset' in available_data.keys()) and \
-                ('sample_sizes' in available_data.keys()):
-            sample_size = sample_sizes_to_sample_size(available_data['sample_sizes'])
-            samplevar_dataset = masker.transform(available_data['samplevar_dataset'])
+        elif ("samplevar_dataset" in available_data.keys()) and (
+            "sample_sizes" in available_data.keys()
+        ):
+            sample_size = sample_sizes_to_sample_size(available_data["sample_sizes"])
+            samplevar_dataset = masker.transform(available_data["samplevar_dataset"])
             varcope = samplevar_dataset_to_varcope(samplevar_dataset, sample_size)
             varcope = masker.inverse_transform(varcope)
-        elif ('sd' in available_data.keys()) and ('sample_sizes' in available_data.keys()):
-            sample_size = sample_sizes_to_sample_size(available_data['sample_sizes'])
-            sd = masker.transform(available_data['sd'])
+        elif ("sd" in available_data.keys()) and ("sample_sizes" in available_data.keys()):
+            sample_size = sample_sizes_to_sample_size(available_data["sample_sizes"])
+            sd = masker.transform(available_data["sd"])
             varcope = sd_to_varcope(sd, sample_size)
             varcope = masker.inverse_transform(varcope)
-        elif ('t' in available_data.keys()) and ('beta' in available_data.keys()):
-            t = masker.transform(available_data['t'])
-            beta = masker.transform(available_data['beta'])
+        elif ("t" in available_data.keys()) and ("beta" in available_data.keys()):
+            t = masker.transform(available_data["t"])
+            beta = masker.transform(available_data["beta"])
             varcope = t_and_beta_to_varcope(t, beta)
             varcope = masker.inverse_transform(varcope)
         else:
@@ -328,7 +331,7 @@ def t_and_beta_to_varcope(t, beta):
     return varcope
 
 
-def p_to_z(p, tail='two'):
+def p_to_z(p, tail="two"):
     """Convert p-values to (unsigned) z-values.
 
     Parameters
@@ -347,10 +350,10 @@ def p_to_z(p, tail='two'):
     eps = np.spacing(1)
     p = np.array(p)
     p[p < eps] = eps
-    if tail == 'two':
+    if tail == "two":
         z = ndtri(1 - (p / 2))
         z = np.array(z)
-    elif tail == 'one':
+    elif tail == "one":
         z = ndtri(1 - p)
         z = np.array(z)
         z[z < 0] = 0
@@ -362,10 +365,8 @@ def p_to_z(p, tail='two'):
     return z
 
 
-@due.dcite(references.T2Z_TRANSFORM,
-           description='Introduces T-to-Z transform.')
-@due.dcite(references.T2Z_IMPLEMENTATION,
-           description='Python implementation of T-to-Z transform.')
+@due.dcite(references.T2Z_TRANSFORM, description="Introduces T-to-Z transform.")
+@due.dcite(references.T2Z_IMPLEMENTATION, description="Python implementation of T-to-Z transform.")
 def t_to_z(t_values, dof):
     """
     Convert t-statistics to z-statistics.
@@ -400,8 +401,8 @@ def t_to_z(t_values, dof):
 
     # Select values less than or == 0, and greater than zero
     c = np.zeros(len(nonzero))
-    k1 = (nonzero <= c)
-    k2 = (nonzero > c)
+    k1 = nonzero <= c
+    k2 = nonzero > c
 
     # Subset the data into two sets
     t1 = nonzero[k1]
@@ -423,6 +424,32 @@ def t_to_z(t_values, dof):
 
 
 def z_to_t(z_values, dof):
+    """
+    Convert z-statistics to t-statistics.
+
+    An inversion of the t_to_z implementation of [1]_ from Vanessa Sochat's
+    TtoZ package [2]_.
+
+    Parameters
+    ----------
+    z_values : array_like
+        Z-statistics
+    dof : int
+        Degrees of freedom
+
+    Returns
+    -------
+    t_values : array_like
+        T-statistics
+
+    References
+    ----------
+    .. [1] Hughett, P. (2007). Accurate Computation of the F-to-z and t-to-z
+           Transforms for Large Arguments. Journal of Statistical Software,
+           23(1), 1-5.
+    .. [2] Sochat, V. (2015, October 21). TtoZ Original Release. Zenodo.
+           http://doi.org/10.5281/zenodo.32508
+    """
     # Select just the nonzero voxels
     nonzero = z_values[z_values != 0]
 
@@ -431,8 +458,8 @@ def z_to_t(z_values, dof):
 
     # Select values less than or == 0, and greater than zero
     c = np.zeros(len(nonzero))
-    k1 = (nonzero <= c)
-    k2 = (nonzero > c)
+    k1 = nonzero <= c
+    k2 = nonzero > c
 
     # Subset the data into two sets
     z1 = nonzero[k1]
@@ -456,6 +483,22 @@ def z_to_t(z_values, dof):
 def vox2mm(ijk, affine):
     """
     Convert matrix subscripts to coordinates.
+
+    Parameters
+    ----------
+    ijk : (X, 3) :obj:`numpy.ndarray`
+        Matrix subscripts for coordinates being transformed.
+        One row for each coordinate, with three columns: i, j, and k.
+    affine : (4, 4) :obj:`numpy.ndarray`
+        Affine matrix from image.
+
+    Returns
+    -------
+    xyz : (X, 3) :obj:`numpy.ndarray`
+        Coordinates in image-space.
+
+    Notes
+    -----
     From here:
     http://blog.chrisgorgolewski.org/2014/12/how-to-convert-between-voxel-and-mm.html
     """
@@ -466,6 +509,22 @@ def vox2mm(ijk, affine):
 def mm2vox(xyz, affine):
     """
     Convert coordinates to matrix subscripts.
+
+    Parameters
+    ----------
+    xyz : (X, 3) :obj:`numpy.ndarray`
+        Coordinates in image-space.
+        One row for each coordinate, with three columns: x, y, and z.
+    affine : (4, 4) :obj:`numpy.ndarray`
+        Affine matrix from image.
+
+    Returns
+    -------
+    ijk : (X, 3) :obj:`numpy.ndarray`
+        Matrix subscripts for coordinates being transformed.
+
+    Notes
+    -----
     From here:
     http://blog.chrisgorgolewski.org/2014/12/how-to-convert-between-voxel-and-mm.html
     """
@@ -473,35 +532,50 @@ def mm2vox(xyz, affine):
     return ijk
 
 
-@due.dcite(references.LANCASTER_TRANSFORM,
-           description='Introduces the Lancaster MNI-to-Talairach transform, '
-                       'as well as its inverse, the Talairach-to-MNI '
-                       'transform.')
-@due.dcite(references.LANCASTER_TRANSFORM_VALIDATION,
-           description='Validates the Lancaster MNI-to-Talairach and '
-                       'Talairach-to-MNI transforms.')
+@due.dcite(
+    references.LANCASTER_TRANSFORM,
+    description="Introduces the Lancaster MNI-to-Talairach transform, "
+    "as well as its inverse, the Talairach-to-MNI "
+    "transform.",
+)
+@due.dcite(
+    references.LANCASTER_TRANSFORM_VALIDATION,
+    description="Validates the Lancaster MNI-to-Talairach and " "Talairach-to-MNI transforms.",
+)
 def tal2mni(coords):
     """
+    Convert coordinates from Talairach space to MNI space.
+
+    Parameters
+    ----------
+    coords : (X, 3) :obj:`numpy.ndarray`
+        Coordinates in Talairach space to convert.
+        Each row is a coordinate, with three columns.
+
+    Returns
+    -------
+    coords : (X, 3) :obj:`numpy.ndarray`
+        Coordinates in MNI space.
+        Each row is a coordinate, with three columns.
+
+    Notes
+    -----
     Python version of BrainMap's tal2icbm_other.m.
+
     This function converts coordinates from Talairach space to MNI
     space (normalized using templates other than those contained
     in SPM and FSL) using the tal2icbm transform developed and
     validated by Jack Lancaster at the Research Imaging Center in
     San Antonio, Texas.
     http://www3.interscience.wiley.com/cgi-bin/abstract/114104479/ABSTRACT
-    FORMAT outpoints = tal2icbm_other(inpoints)
-    Where inpoints is N by 3 or 3 by N matrix of coordinates
-    (N being the number of points)
-    ric.uthscsa.edu 3/14/07
     """
     # Find which dimensions are of size 3
     shape = np.array(coords.shape)
     if all(shape == 3):
-        LGR.info('Input is an ambiguous 3x3 matrix.\nAssuming coords are row '
-                 'vectors (Nx3).')
+        LGR.info("Input is an ambiguous 3x3 matrix.\nAssuming coords are row " "vectors (Nx3).")
         use_dim = 1
     elif not any(shape == 3):
-        raise AttributeError('Input must be an Nx3 or 3xN matrix.')
+        raise AttributeError("Input must be an Nx3 or 3xN matrix.")
     else:
         use_dim = np.where(shape == 3)[0][0]
 
@@ -510,10 +584,14 @@ def tal2mni(coords):
         coords = coords.transpose()
 
     # Transformation matrices, different for each software package
-    icbm_other = np.array([[0.9357, 0.0029, -0.0072, -1.0423],
-                           [-0.0065, 0.9396, -0.0726, -1.3940],
-                           [0.0103, 0.0752, 0.8967, 3.6475],
-                           [0.0000, 0.0000, 0.0000, 1.0000]])
+    icbm_other = np.array(
+        [
+            [0.9357, 0.0029, -0.0072, -1.0423],
+            [-0.0065, 0.9396, -0.0726, -1.3940],
+            [0.0103, 0.0752, 0.8967, 3.6475],
+            [0.0000, 0.0000, 0.0000, 1.0000],
+        ]
+    )
 
     # Invert the transformation matrix
     icbm_other = np.linalg.inv(icbm_other)
@@ -529,34 +607,48 @@ def tal2mni(coords):
     return out_coords
 
 
-@due.dcite(references.LANCASTER_TRANSFORM,
-           description='Introduces the Lancaster MNI-to-Talairach transform, '
-                       'as well as its inverse, the Talairach-to-MNI '
-                       'transform.')
-@due.dcite(references.LANCASTER_TRANSFORM_VALIDATION,
-           description='Validates the Lancaster MNI-to-Talairach and '
-                       'Talairach-to-MNI transforms.')
+@due.dcite(
+    references.LANCASTER_TRANSFORM,
+    description="Introduces the Lancaster MNI-to-Talairach transform, "
+    "as well as its inverse, the Talairach-to-MNI "
+    "transform.",
+)
+@due.dcite(
+    references.LANCASTER_TRANSFORM_VALIDATION,
+    description="Validates the Lancaster MNI-to-Talairach and " "Talairach-to-MNI transforms.",
+)
 def mni2tal(coords):
     """
+    Convert coordinates from MNI space Talairach space.
+
+    Parameters
+    ----------
+    coords : (X, 3) :obj:`numpy.ndarray`
+        Coordinates in MNI space to convert.
+        Each row is a coordinate, with three columns.
+
+    Returns
+    -------
+    coords : (X, 3) :obj:`numpy.ndarray`
+        Coordinates in Talairach space.
+        Each row is a coordinate, with three columns.
+
+    Notes
+    -----
     Python version of BrainMap's icbm_other2tal.m.
     This function converts coordinates from MNI space (normalized using
     templates other than those contained in SPM and FSL) to Talairach space
     using the icbm2tal transform developed and validated by Jack Lancaster at
     the Research Imaging Center in San Antonio, Texas.
     http://www3.interscience.wiley.com/cgi-bin/abstract/114104479/ABSTRACT
-    FORMAT outpoints = icbm_other2tal(inpoints)
-    Where inpoints is N by 3 or 3 by N matrix of coordinates
-    (N being the number of points)
-    ric.uthscsa.edu 3/14/07
     """
     # Find which dimensions are of size 3
     shape = np.array(coords.shape)
     if all(shape == 3):
-        LGR.info('Input is an ambiguous 3x3 matrix.\nAssuming coords are row '
-                 'vectors (Nx3).')
+        LGR.info("Input is an ambiguous 3x3 matrix.\nAssuming coords are row " "vectors (Nx3).")
         use_dim = 1
     elif not any(shape == 3):
-        raise AttributeError('Input must be an Nx3 or 3xN matrix.')
+        raise AttributeError("Input must be an Nx3 or 3xN matrix.")
     else:
         use_dim = np.where(shape == 3)[0][0]
 
@@ -565,10 +657,14 @@ def mni2tal(coords):
         coords = coords.transpose()
 
     # Transformation matrices, different for each software package
-    icbm_other = np.array([[0.9357, 0.0029, -0.0072, -1.0423],
-                           [-0.0065, 0.9396, -0.0726, -1.3940],
-                           [0.0103, 0.0752, 0.8967, 3.6475],
-                           [0.0000, 0.0000, 0.0000, 1.0000]])
+    icbm_other = np.array(
+        [
+            [0.9357, 0.0029, -0.0072, -1.0423],
+            [-0.0065, 0.9396, -0.0726, -1.3940],
+            [0.0103, 0.0752, 0.8967, 3.6475],
+            [0.0000, 0.0000, 0.0000, 1.0000],
+        ]
+    )
 
     # Apply the transformation matrix
     coords = np.concatenate((coords, np.ones((1, coords.shape[1]))))
