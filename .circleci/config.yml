@@ -26,7 +26,7 @@ jobs:
                 echo "Restoring environment from cache"
                 source activate py36_env
             else
-                conda create -n py36_env python=3.6 numpy traits -yq
+                conda create -n py36_env python=3.6 numpy -yq
                 source activate py36_env
                 pip install -e .[tests,doc,peaks2maps-cpu]
             fi
@@ -53,7 +53,7 @@ jobs:
                 echo "Restoring environment from cache"
                 source activate py38_env
             else
-                conda create -n py38_env python=3.8 numpy traits -yq
+                conda create -n py38_env python=3.8 numpy -yq
                 source activate py38_env
                 pip install pip -U
                 pip install -e .[tests,doc,peaks2maps-cpu]
@@ -62,8 +62,9 @@ jobs:
       - run:
           name: Run tests
           command:  |
+            apt-get install -yqq make
             source activate py38_env
-            py.test nimare
+            make unittest
 
   test_py37:
     working_directory: /tmp/src/NiMARE
@@ -82,7 +83,7 @@ jobs:
                 echo "Restoring environment from cache"
                 source activate py37_env
             else
-                conda create -n py37_env python=3.7 numpy traits -yq
+                conda create -n py37_env python=3.7 numpy -yq
                 source activate py37_env
                 pip install -e .[tests,doc,peaks2maps-cpu]
             fi
@@ -90,8 +91,9 @@ jobs:
       - run:
           name: Run tests
           command:  |
+            apt-get install -yqq make
             source activate py37_env
-            py.test nimare
+            make unittest
 
   build_docs:
     working_directory: /tmp/src/NiMARE
@@ -140,9 +142,29 @@ jobs:
       - run:
           name: Run tests and compile coverage
           command:  |
+            apt-get install -yqq make
             apt-get install -yqq curl
             source activate py36_env
-            py.test --cov-report xml:coverage.xml --cov=nimare nimare
+            make unittest
+      - codecov/upload:
+          file: /tmp/src/NiMARE/coverage.xml
+        
+  test_performance:
+    working_directory: /tmp/src/NiMARE
+    docker:
+      - image: continuumio/miniconda3
+    steps:
+      - attach_workspace:  # get NiMARE
+          at: /tmp
+      - restore_cache:  # load environment
+          key: deps9-{{ checksum "nimare/info.py" }}
+      - run:
+          name: Test reasonable output for combinations of estimators/kernels/correctors
+          no_output_timeout: 30m
+          command:  |
+            apt-get install -yqq make
+            source activate py36_env
+            make performancetest
       - codecov/upload:
           file: /tmp/src/NiMARE/coverage.xml
 
@@ -177,6 +199,12 @@ workflows:
             tags:
               only: /.*/
       - test_py36_and_coverage:
+          requires:
+            - build_py36
+          filters:
+            tags:
+              only: /.*/
+      - test_performance:
           requires:
             - build_py36
           filters:

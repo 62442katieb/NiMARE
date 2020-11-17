@@ -114,9 +114,9 @@ def null_to_p(test_value, null_array, tail="two"):
 
     Parameters
     ----------
-    test_value : :obj:`float`
-        Value for which to determine p-value.
-    null_array : 1D :class:`numpy.ndarray`
+    test_value : 1D array_like
+        Values for which to determine p-value.
+    null_array : 1D array_like
         Null distribution against which test_value is compared.
     tail : {'two', 'upper', 'lower'}, optional
         Whether to compare value against null distribution in a two-sided
@@ -130,22 +130,42 @@ def null_to_p(test_value, null_array, tail="two"):
     p_value : :obj:`float`
         P-value associated with the test value when compared against the null
         distribution.
+
+    Notes
+    -----
+    P-values are clipped based on the number of elements in the null array.
+    Therefore no p-values of 0 or 1 should be produced.
     """
-    if tail == "two":
-        p_value = (
-            (50 - np.abs(stats.percentileofscore(null_array, test_value) - 50.0)) * 2.0 / 100.0
-        )
-    elif tail == "upper":
-        p_value = 1 - (stats.percentileofscore(null_array, test_value) / 100.0)
-    elif tail == "lower":
-        p_value = stats.percentileofscore(null_array, test_value) / 100.0
+    test_value = np.atleast_1d(test_value)
+
+    # For efficiency's sake, if there are more than 1000 values, pass only the unique
+    # values through percentileofscore(), and then reconstruct.
+    if len(test_value) > 1000:
+        reconstruct = True
+        test_value, uniq_idx = np.unique(test_value, return_inverse=True)
     else:
-        raise ValueError('Argument "tail" must be one of ["two", "upper", ' '"lower"]')
+        reconstruct = False
 
-    if p_value == 0:
-        p_value = np.finfo(float).eps
+    # TODO: this runs in N^2 time; is there a more efficient alternative?
+    p = np.array([stats.percentileofscore(null_array, v, "strict") for v in test_value])
+    p /= 100.0
+    if tail == "two":
+        p = (0.5 - np.abs(p - 0.5)) * 2
+    elif tail == "upper":
+        p = 1 - p
+    elif tail != "lower":
+        raise ValueError('Argument "tail" must be one of ["two", "upper", "lower"]')
 
-    return p_value
+    smallest_value = np.maximum(np.finfo(float).eps, 1.0 / len(null_array))
+
+    # ensure p_value in the following range:
+    # smallest_value <= p_value <= (1.0 - smallest_value)
+    result = np.maximum(smallest_value, np.minimum(p, 1.0 - smallest_value))
+
+    if reconstruct:
+        result = result[uniq_idx]
+
+    return result
 
 
 def fdr(p, q=0.05):
