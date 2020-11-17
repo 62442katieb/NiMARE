@@ -5,14 +5,13 @@ from __future__ import division
 
 import logging
 
+from nilearn.mass_univariate import permuted_ols
 import numpy as np
-from scipy import stats
 
 import pymare
 
 from ..base import MetaEstimator
-from ..stats import null_to_p
-from ..transforms import p_to_z
+from ..transforms import p_to_z, t_to_z
 
 LGR = logging.getLogger(__name__)
 
@@ -43,7 +42,7 @@ class Fishers(MetaEstimator):
 
     See also
     --------
-    :class:`pymare.estimators.Fishers`:
+    :class:`pymare.estimators.FisherCombinationTest`:
         The PyMARE estimator called by this class.
     """
 
@@ -54,8 +53,8 @@ class Fishers(MetaEstimator):
 
     def _fit(self, dataset):
         pymare_dset = pymare.Dataset(y=self.inputs_["z_maps"])
-        est = pymare.estimators.Fishers(input="z")
-        est.fit(pymare_dset)
+        est = pymare.estimators.FisherCombinationTest()
+        est.fit_dataset(pymare_dset)
         est_summary = est.summary()
         results = {
             "z": est_summary.z,
@@ -99,13 +98,11 @@ class Stouffers(MetaEstimator):
 
     See also
     --------
-    :class:`pymare.estimators.Stouffers`:
+    :class:`pymare.estimators.StoufferCombinationTest`:
         The PyMARE estimator called by this class.
     """
 
-    _required_inputs = {
-        "z_maps": ("image", "z"),
-    }
+    _required_inputs = {"z_maps": ("image", "z")}
 
     def __init__(self, use_sample_size=False, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -114,6 +111,8 @@ class Stouffers(MetaEstimator):
             self._required_inputs["sample_sizes"] = ("metadata", "sample_sizes")
 
     def _fit(self, dataset):
+        est = pymare.estimators.StoufferCombinationTest()
+
         if self.use_sample_size:
             sample_sizes = np.array([np.mean(n) for n in self.inputs_["sample_sizes"]])
             weights = np.sqrt(sample_sizes)
@@ -122,9 +121,9 @@ class Stouffers(MetaEstimator):
         else:
             pymare_dset = pymare.Dataset(y=self.inputs_["z_maps"])
 
-        est = pymare.estimators.Stouffers(input="z")
-        est.fit(pymare_dset)
+        est.fit_dataset(pymare_dset)
         est_summary = est.summary()
+
         results = {
             "z": est_summary.z,
             "p": est_summary.p,
@@ -168,10 +167,7 @@ class WeightedLeastSquares(MetaEstimator):
         The PyMARE estimator called by this class.
     """
 
-    _required_inputs = {
-        "beta_maps": ("image", "beta"),
-        "varcope_maps": ("image", "varcope"),
-    }
+    _required_inputs = {"beta_maps": ("image", "beta"), "varcope_maps": ("image", "varcope")}
 
     def __init__(self, tau2=0, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -180,7 +176,7 @@ class WeightedLeastSquares(MetaEstimator):
     def _fit(self, dataset):
         pymare_dset = pymare.Dataset(y=self.inputs_["beta_maps"], v=self.inputs_["varcope_maps"])
         est = pymare.estimators.WeightedLeastSquares(tau2=self.tau2)
-        est.fit(pymare_dset)
+        est.fit_dataset(pymare_dset)
         est_summary = est.summary()
         results = {
             "tau2": est_summary.tau2,
@@ -222,10 +218,7 @@ class DerSimonianLaird(MetaEstimator):
         The PyMARE estimator called by this class.
     """
 
-    _required_inputs = {
-        "beta_maps": ("image", "beta"),
-        "varcope_maps": ("image", "varcope"),
-    }
+    _required_inputs = {"beta_maps": ("image", "beta"), "varcope_maps": ("image", "varcope")}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -233,7 +226,7 @@ class DerSimonianLaird(MetaEstimator):
     def _fit(self, dataset):
         est = pymare.estimators.DerSimonianLaird()
         pymare_dset = pymare.Dataset(y=self.inputs_["beta_maps"], v=self.inputs_["varcope_maps"])
-        est.fit(pymare_dset)
+        est.fit_dataset(pymare_dset)
         est_summary = est.summary()
         results = {
             "tau2": est_summary.tau2,
@@ -271,10 +264,7 @@ class Hedges(MetaEstimator):
         The PyMARE estimator called by this class.
     """
 
-    _required_inputs = {
-        "beta_maps": ("image", "beta"),
-        "varcope_maps": ("image", "varcope"),
-    }
+    _required_inputs = {"beta_maps": ("image", "beta"), "varcope_maps": ("image", "varcope")}
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -282,7 +272,7 @@ class Hedges(MetaEstimator):
     def _fit(self, dataset):
         est = pymare.estimators.Hedges()
         pymare_dset = pymare.Dataset(y=self.inputs_["beta_maps"], v=self.inputs_["varcope_maps"])
-        est.fit(pymare_dset)
+        est.fit_dataset(pymare_dset)
         est_summary = est.summary()
         results = {
             "tau2": est_summary.tau2,
@@ -347,7 +337,7 @@ class SampleSizeBasedLikelihood(MetaEstimator):
         n_maps = np.tile(sample_sizes, (self.inputs_["beta_maps"].shape[1], 1)).T
         pymare_dset = pymare.Dataset(y=self.inputs_["beta_maps"], n=n_maps)
         est = pymare.estimators.SampleSizeBasedLikelihoodEstimator(method=self.method)
-        est.fit(pymare_dset)
+        est.fit_dataset(pymare_dset)
         est_summary = est.summary()
         results = {
             "tau2": est_summary.tau2,
@@ -404,10 +394,7 @@ class VarianceBasedLikelihood(MetaEstimator):
         The PyMARE estimator called by this class.
     """
 
-    _required_inputs = {
-        "beta_maps": ("image", "beta"),
-        "varcope_maps": ("image", "varcope"),
-    }
+    _required_inputs = {"beta_maps": ("image", "beta"), "varcope_maps": ("image", "varcope")}
 
     def __init__(self, method="ml", *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -417,7 +404,7 @@ class VarianceBasedLikelihood(MetaEstimator):
         est = pymare.estimators.VarianceBasedLikelihoodEstimator(method=self.method)
 
         pymare_dset = pymare.Dataset(y=self.inputs_["beta_maps"], v=self.inputs_["varcope_maps"])
-        est.fit(pymare_dset)
+        est.fit_dataset(pymare_dset)
         est_summary = est.summary()
         results = {
             "tau2": est_summary.tau2,
@@ -428,118 +415,127 @@ class VarianceBasedLikelihood(MetaEstimator):
         return results
 
 
-class TTest(MetaEstimator):
-    """
-    A t-test on contrast images, with optional empirical null distribution.
-    Requires contrast images.
+class PermutedOLS(MetaEstimator):
+    r"""
+    An analysis with permuted ordinary least squares (OLS), using nilearn.
 
     Parameters
     ----------
-    null : {'theoretical', 'empirical'}, optional
-        Whether to use a theoretical null T distribution or an empirically-
-        derived null distribution determined via sign flipping.
-        Default is 'theoretical'.
-    n_iters : :obj:`int` or :obj:`None`, optional
-        The number of iterations to run in estimating the null distribution.
-        Only used if ``null = 'empirical'``.
     two_sided : :obj:`bool`, optional
-        Whether to do a two- or one-sided test. Default is True.
+        If True, performs an unsigned t-test. Both positive and negative effects are considered;
+        the null hypothesis is that the effect is zero. If False, only positive effects are
+        considered as relevant. The null hypothesis is that the effect is zero or negative.
+        Default is True.
 
     Notes
     -----
-    Requires ``beta`` images.
+    Requires ``z`` images.
+
+    Available correction methods: :func:`PermutedOLS.correct_fwe_montecarlo`
 
     Warning
     -------
     All image-based meta-analysis estimators adopt an aggressive masking
     strategy, in which any voxels with a value of zero in any of the input maps
     will be removed from the analysis.
+
+    References
+    ----------
+    * Freedman, D., & Lane, D. (1983). A nonstochastic interpretation of reported significance
+      levels. Journal of Business & Economic Statistics, 1(4), 292-298.
+
+    See Also
+    --------
+    nilearn.mass_univariate.permuted_ols : The function used for this IBMA.
     """
 
-    _required_inputs = {
-        "beta_maps": ("image", "beta"),
-    }
+    _required_inputs = {"z_maps": ("image", "z")}
 
-    def __init__(self, null="theoretical", n_iters=None, two_sided=True, *args, **kwargs):
+    def __init__(self, two_sided=True, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.null = null
-        self.n_iters = n_iters
         self.two_sided = two_sided
-        self.results = None
+        self.parameters_ = {}
 
     def _fit(self, dataset):
-        return t_test(
-            self.inputs_["beta_maps"],
-            null=self.null,
-            n_iters=self.n_iters,
-            two_sided=self.two_sided,
+        # Use intercept as explanatory variable
+        self.parameters_["tested_vars"] = np.ones((self.inputs_["z_maps"].shape[0], 1))
+        self.parameters_["confounding_vars"] = None
+
+        _, t_map, _ = permuted_ols(
+            self.parameters_["tested_vars"],
+            self.inputs_["z_maps"],
+            confounding_vars=self.parameters_["confounding_vars"],
+            model_intercept=False,  # modeled by tested_vars
+            n_perm=0,
+            two_sided_test=self.two_sided,
+            random_state=42,
+            n_jobs=1,
+            verbose=0,
         )
 
+        # Convert t to z, preserving signs
+        dof = self.parameters_["tested_vars"].shape[0] - self.parameters_["tested_vars"].shape[1]
+        z_map = t_to_z(t_map, dof)
+        images = {"t": t_map, "z": z_map}
+        return images
 
-def t_test(beta_maps, null="theoretical", n_iters=None, two_sided=True):
-    """
-    Run a random-effects (RFX) GLM on contrast maps.
+    def correct_fwe_montecarlo(self, result, n_iters=10000, n_cores=-1):
+        """
+        Perform FWE correction using the max-value permutation method.
+        Only call this method from within a Corrector.
 
-    Parameters
-    ----------
-    beta_maps : (n_contrasts, n_voxels) :obj:`numpy.ndarray`
-        A 2D array of contrast maps in the same space, after masking.
-    null : {'theoretical', 'empirical'}, optional
-        Whether to use a theoretical null T distribution or an empirically-
-        derived null distribution determined via sign flipping.
-        Default is 'theoretical'.
-    n_iters : :obj:`int` or :obj:`None`, optional
-        The number of iterations to run in estimating the null distribution.
-        Only used if ``null = 'empirical'``.
-    two_sided : :obj:`bool`, optional
-        Whether to do a two- or one-sided test. Default is True.
+        Parameters
+        ----------
+        result : :obj:`nimare.results.MetaResult`
+            Result object from an ALE meta-analysis.
+        n_iters : :obj:`int`, optional
+            The number of iterations to run in estimating the null distribution.
+            Default is 10000.
+        n_cores : :obj:`int`, optional
+            Number of cores to use for parallelization.
+            If <=0, defaults to using all available cores. Default is -1.
 
-    Returns
-    -------
-    result : :obj:`dict`
-        Dictionary object containing maps for test statistics, p-values, and
-        negative log(p) values.
-    """
-    # Normalize contrast maps to have unit variance
-    beta_maps = beta_maps / np.std(beta_maps, axis=1)[:, None]
-    t_map, p_map = stats.ttest_1samp(beta_maps, popmean=0, axis=0)
-    t_map[np.isnan(t_map)] = 0
-    p_map[np.isnan(p_map)] = 1
+        Returns
+        -------
+        images : :obj:`dict`
+            Dictionary of 1D arrays corresponding to masked images generated by
+            the correction procedure. The following arrays are generated by
+            this method: 'z_vthresh', 'p_level-voxel', 'z_level-voxel', and
+            'logp_level-cluster'.
 
-    if not two_sided:
-        # MATLAB one-tailed method
-        p_map = stats.t.cdf(-t_map, df=beta_maps.shape[0] - 1)
+        See Also
+        --------
+        nimare.correct.FWECorrector : The Corrector from which to call this method.
+        nilearn.mass_univariate.permuted_ols : The function used for this IBMA.
 
-    if null == "empirical":
-        k = beta_maps.shape[0]
-        p_map = np.ones(t_map.shape)
-        iter_t_maps = np.zeros((n_iters, t_map.shape[0]))
+        Examples
+        --------
+        >>> meta = PermutedOLS()
+        >>> result = meta.fit(dset)
+        >>> corrector = FWECorrector(method='montecarlo',
+                                     n_iters=5, n_cores=1)
+        >>> cresult = corrector.transform(result)
+        """
+        n_cores = self._check_ncores(n_cores)
 
-        data_signs = np.sign(beta_maps[beta_maps != 0])
-        data_signs[data_signs < 0] = 0
-        posprop = np.mean(data_signs)
-        for i in range(n_iters):
-            iter_beta_maps = np.copy(beta_maps)
-            signs = np.random.choice(a=2, size=k, p=[1 - posprop, posprop])
-            signs[signs == 0] = -1
-            iter_beta_maps *= signs[:, None]
-            iter_t_maps[i, :], _ = stats.ttest_1samp(iter_beta_maps, popmean=0, axis=0)
-        iter_t_maps[np.isnan(iter_t_maps)] = 0
+        log_p_map, t_map, _ = permuted_ols(
+            self.parameters_["tested_vars"],
+            self.inputs_["z_maps"],
+            confounding_vars=self.parameters_["confounding_vars"],
+            model_intercept=False,  # modeled by tested_vars
+            n_perm=n_iters,
+            two_sided_test=self.two_sided,
+            random_state=42,
+            n_jobs=n_cores,
+            verbose=0,
+        )
 
-        for voxel in range(iter_t_maps.shape[1]):
-            p_map[voxel] = null_to_p(t_map[voxel], iter_t_maps[:, voxel])
+        # Fill complete maps
+        p_map = np.power(10.0, -log_p_map)
 
-        # Crop p-values of 0 or 1 to nearest values that won't evaluate to
-        # 0 or 1. Prevents inf z-values.
-        p_map[p_map < 1e-16] = 1e-16
-        p_map[p_map > (1.0 - 1e-16)] = 1.0 - 1e-16
-    elif null != "theoretical":
-        raise ValueError('Input null must be "theoretical" or "empirical".')
-
-    # Convert p to z, preserving signs
-    sign = np.sign(t_map)
-    sign[sign == 0] = 1
-    z_map = p_to_z(p_map, tail="two") * sign
-    log_p_map = -np.log10(p_map)
-    images = {"t": t_map, "z": z_map, "p": p_map, "logp": log_p_map}
-    return images
+        # Convert p to z, preserving signs
+        sign = np.sign(t_map)
+        sign[sign == 0] = 1
+        z_map = p_to_z(p_map, tail="two") * sign
+        images = {"logp_level-voxel": log_p_map, "z_level-voxel": z_map}
+        return images

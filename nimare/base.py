@@ -10,8 +10,6 @@ from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 
 import numpy as np
-import pandas as pd
-from six import with_metaclass
 
 from .results import MetaResult
 from .utils import get_masker
@@ -19,7 +17,7 @@ from .utils import get_masker
 LGR = logging.getLogger(__name__)
 
 
-class NiMAREBase(with_metaclass(ABCMeta)):
+class NiMAREBase(metaclass=ABCMeta):
     """
     Base class for NiMARE.
     """
@@ -298,148 +296,12 @@ class MetaEstimator(Estimator):
                 # once PyMARE is able to handle masked arrays or missing data.
                 bad_voxel_idx = np.where(temp_arr == 0)[1]
                 bad_voxel_idx = np.unique(bad_voxel_idx)
+                LGR.debug('Masking out {} "bad" voxels'.format(len(bad_voxel_idx)))
                 temp_arr[:, bad_voxel_idx] = 0
 
                 self.inputs_[name] = temp_arr
             elif type_ == "coordinates":
                 self.inputs_[name] = dataset.coordinates.copy()
-
-
-class CBMAEstimator(MetaEstimator):
-    """Base class for coordinate-based meta-analysis methods.
-
-    Parameters
-    ----------
-    kernel_transformer : :obj:`nimare.base.KernelTransformer`, optional
-        Kernel with which to convolve coordinates from dataset. Default is
-        ALEKernel.
-    *args
-        Optional arguments to the :obj:`nimare.base.MetaEstimator` __init__
-        (called automatically).
-    **kwargs
-        Optional keyword arguments to the :obj:`nimare.base.MetaEstimator`
-        __init__ (called automatically).
-    """
-
-    def __init__(self, kernel_transformer, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-
-        # Get kernel transformer
-        kernel_args = {
-            k.split("kernel__")[1]: v for k, v in kwargs.items() if k.startswith("kernel__")
-        }
-
-        # Allow both instances and classes for the kernel transformer input.
-        if not issubclass(type(kernel_transformer), KernelTransformer) and not issubclass(
-            kernel_transformer, KernelTransformer
-        ):
-            raise ValueError(
-                'Argument "kernel_transformer" must be a kind of ' "KernelTransformer"
-            )
-        elif not inspect.isclass(kernel_transformer) and kernel_args:
-            LGR.warning(
-                'Argument "kernel_transformer" has already been '
-                "initialized, so kernel arguments will be ignored: "
-                "{}".format(", ".join(kernel_args.keys()))
-            )
-        elif inspect.isclass(kernel_transformer):
-            kernel_transformer = kernel_transformer(**kernel_args)
-        self.kernel_transformer = kernel_transformer
-
-    def _preprocess_input(self, dataset):
-        """Mask required input images using either the dataset's mask or the
-        estimator's. Also, insert required metadata into coordinates DataFrame.
-        """
-        super()._preprocess_input(dataset)
-
-        # All extra (non-ijk) parameters for a kernel should be overrideable as
-        # parameters to __init__, so we can access them with get_params()
-        kt_args = list(self.kernel_transformer.get_params().keys())
-
-        # Integrate "sample_size" from metadata into DataFrame so that
-        # kernel_transformer can access it.
-        if "sample_size" in kt_args:
-            if "sample_sizes" in dataset.get_metadata():
-                # Extract sample sizes and make DataFrame
-                sample_sizes = dataset.get_metadata(field="sample_sizes", ids=dataset.ids)
-                # we need an extra layer of lists
-                sample_sizes = [[ss] for ss in sample_sizes]
-                sample_sizes = pd.DataFrame(
-                    index=dataset.ids, data=sample_sizes, columns=["sample_sizes"]
-                )
-                sample_sizes["sample_size"] = sample_sizes["sample_sizes"].apply(np.mean)
-                # Merge sample sizes df into coordinates df
-                self.inputs_["coordinates"] = self.inputs_["coordinates"].merge(
-                    right=sample_sizes,
-                    left_on="id",
-                    right_index=True,
-                    sort=False,
-                    validate="many_to_one",
-                    suffixes=(False, False),
-                    how="left",
-                )
-            else:
-                LGR.warning(
-                    'Metadata field "sample_sizes" not found. '
-                    "Set a constant sample size as a kernel transformer "
-                    "argument, if possible."
-                )
-
-
-class PairwiseCBMAEstimator(CBMAEstimator):
-    """Base class for pairwise coordinate-based meta-analysis methods.
-
-    Parameters
-    ----------
-    kernel_transformer : :obj:`nimare.base.KernelTransformer`, optional
-        Kernel with which to convolve coordinates from dataset. Default is
-        ALEKernel.
-    *args
-        Optional arguments to the :obj:`nimare.base.MetaEstimator` __init__
-        (called automatically).
-    **kwargs
-        Optional keyword arguments to the :obj:`nimare.base.MetaEstimator`
-        __init__ (called automatically).
-    """
-
-    def fit(self, dataset1, dataset2):
-        """
-        Fit Estimator to two Datasets.
-
-        Parameters
-        ----------
-        dataset1/dataset2 : :obj:`nimare.dataset.Dataset`
-            Dataset objects to analyze.
-
-        Returns
-        -------
-        :obj:`nimare.results.MetaResult`
-            Results of Estimator fitting.
-
-        Notes
-        -----
-        The `fit` method is a light wrapper that runs input validation and
-        preprocessing before fitting the actual model. Estimators' individual
-        "fitting" methods are implemented as `_fit`, although users should
-        call `fit`.
-        """
-        self._validate_input(dataset1)
-        self._validate_input(dataset2)
-        # grab and override
-        self._preprocess_input(dataset1)
-        self.inputs_["coordinates1"] = self.inputs_.pop("coordinates")
-        # grab and override
-        self._preprocess_input(dataset2)
-        self.inputs_["coordinates2"] = self.inputs_.pop("coordinates")
-
-        maps = self._fit(dataset1, dataset2)
-
-        if hasattr(self, "masker") and self.masker is not None:
-            masker = self.masker
-        else:
-            masker = dataset1.masker
-        self.results = MetaResult(self, masker, maps)
-        return self.results
 
 
 class Transformer(NiMAREBase):
@@ -459,60 +321,6 @@ class Transformer(NiMAREBase):
                 'Argument "dataset" must be a valid Dataset '
                 "object, not a {0}".format(type(dataset))
             )
-
-
-class KernelTransformer(Transformer):
-    """Base class for modeled activation-generating methods in
-    :mod:`nimare.meta.kernel`.
-
-    Coordinate-based meta-analyses leverage coordinates reported in
-    neuroimaging papers to simulate the thresholded statistical maps from the
-    original analyses. This generally involves convolving each coordinate with
-    a kernel (typically a Gaussian or binary sphere) that may be weighted based
-    on some additional measure, such as statistic value or sample size.
-
-    Notes
-    -----
-    All extra (non-ijk) parameters for a given kernel should be overrideable as
-    parameters to __init__, so we can access them with get_params() and also
-    apply them to datasets with missing data.
-    """
-
-    def __init__(self):
-        pass
-
-    def _infer_names(self, **kwargs):
-        """
-        Determine the filename pattern for image files created with this transformer,
-        as well as the image type (i.e., the column for the Dataset.images DataFrame).
-        The parameters used to construct the filenames come from the transformer's
-        parameters (attributes saved in `__init__()`).
-
-        Parameters
-        ----------
-        **kwargs
-            Additional key/value pairs to incorporate into the image name.
-            A common example is the hash for the target template's affine.
-
-        Attributes
-        ----------
-        filename_pattern : str
-            Filename pattern for images that will be saved by the transformer.
-        image_type : str
-            Name of the corresponding column in the Dataset.images DataFrame.
-        """
-        params = self.get_params()
-        params = dict(**params, **kwargs)
-
-        # Determine names for kernel-specific files
-        keys = sorted(params.keys())
-        param_str = "_".join("{k}-{v}".format(k=k, v=str(params[k])) for k in keys)
-        self.filename_pattern = (
-            "study-[[id]]_{ps}_{n}.nii.gz".format(n=self.__class__.__name__, ps=param_str)
-            .replace("[[", "{")
-            .replace("]]", "}")
-        )
-        self.image_type = "{ps}_{n}".format(n=self.__class__.__name__, ps=param_str)
 
 
 class Decoder(NiMAREBase):
